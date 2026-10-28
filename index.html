@@ -119,75 +119,143 @@ let sample=null,iv=null,ac;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pts=r=>r,ptx=r=>r===1?'نقطة':r===2?'نقطتين':r+' نقط';
 function beep(f,d){try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.value=.07;o.start();o.stop(ac.currentTime+d)}catch(e){}}
-// المؤقت
+
 function paint(){document.querySelectorAll('.tv').forEach(e=>e.textContent=S.tl);document.querySelectorAll('.tf').forEach(e=>e.style.width=(S.tl/S.max*100)+'%');document.querySelectorAll('.tm').forEach(e=>e.classList.toggle('low',S.tl<=10))}
 function stopT(){clearInterval(iv);iv=null;S.tl=null}
 function startT(sec,cb){stopT();S.exp=false;S.max=S.tl=sec;iv=setInterval(()=>{S.tl--;paint();if(S.tl>0&&S.tl<=5)beep(700,.08);if(S.tl<=0){clearInterval(iv);iv=null;beep(200,.6);cb()}},1000);paint()}
-const expR=()=>{S.exp=true;render()},topExp=()=>{startT(60,topExp);render()};
+
+// تم إصلاح اللوب اللانهائي هنا
+const expR=()=>{S.exp=true;render()};
+const topExp=()=>{S.rev=true;render()};
 const tbox=()=>S.tl===null?'':`<div class="tm"><b class="tv">${S.tl}</b><div class="tbar"><s class="tf" style="width:${S.tl/S.max*100}%"></s></div></div>`;
 
 const gk=()=>{try{return localStorage.getItem('sk_gkey')||''}catch(e){return ''}};
-const DM='gemini-3.8-flash';
-const gm=()=>{try{const m=localStorage.getItem('sk_gmodel');return(!m||m==='gemini-2.5-flash')?DM:m}catch(e){return DM}};
+// تم التغيير إلى النموذج الأسرع والأكثر استقراراً
+const DM='gemini-2.0-flash';
+const gm=()=>{try{const m=localStorage.getItem('sk_gmodel');return(!m||m.includes('3.8')||m.includes('2.5'))?DM:m}catch(e){return DM}};
 function saveKey(){const k=document.getElementById('gk').value.trim(),m=document.getElementById('gmd').value.trim()||DM;try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}const b=document.getElementById('gsv');if(b)b.textContent='✅ اتحفظ'}
-let GCI=0;
+
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
+
 async function ask(p){
   const key=gk();
   if(!key)throw{message:'ضيف مفتاح Gemini الأول من الشاشة الرئيسية.'};
-  const cfgs=[{thinkingConfig:{thinkingLevel:'minimal'}},{thinkingConfig:{thinkingBudget:0}},{}];
-  for(let t=0;t<4;t++){
-    const ac=new AbortController(),to=setTimeout(()=>ac.abort(),60000);
-    let r;
-    try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gm()}:generateContent`,{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json',temperature:1,...cfgs[GCI]}})})}
-    catch(e){clearTimeout(to);if(t<3)continue;throw{message:'Gemini اتأخر قوي. دوس جرّب تاني.'}}
-    clearTimeout(to);
-    if(r.status===429||r.status===503){await sleep(3000*(t+1));continue}
-    if(!r.ok){let m='';try{m=(await r.json()).error.message}catch(e){}
-      if(r.status===400&&/think/i.test(m)&&GCI<cfgs.length-1){GCI++;t--;continue}
-      throw{message:'Gemini: '+(m||r.status)}}
-    const j=await r.json();
-    const txt=(j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[]).map(x=>x.text||'').join('');
-    try{return JSON.parse(txt.replace(/```json|```/g,'').trim())}catch(e){if(t<3)continue;throw{message:'الرد جه بصيغة غلط، جرّب تاني'}}
+  
+  // محاولة النموذج السريع أولاً، ثم البديل في حال الفشل
+  const modelsToTry = [gm(), 'gemini-1.5-flash'];
+  
+  for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
+    const model = modelsToTry[mIdx];
+    for (let t = 0; t < 2; t++) {
+      const ac = new AbortController();
+      const to = setTimeout(() => ac.abort(), 35000); // 35 ثانية كافية جداً لنماذج Flash
+      let r;
+      try {
+        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: 'POST',
+          signal: ac.signal,
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: p }] }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.4, // درجة حرارة منخفضة لسرعة أكبر ودقة أعلى في JSON
+              maxOutputTokens: 2048 // منع النموذج من الكلام الزائد وتسريع الرد
+            }
+          })
+        });
+      } catch (e) {
+        clearTimeout(to);
+        if (t < 1) continue;
+        break;
+      }
+      clearTimeout(to);
+      
+      if (r.status === 429 || r.status === 503) {
+        await sleep(1500 * (t + 1));
+        continue;
+      }
+      if (!r.ok) {
+        let m = '';
+        try { m = (await r.json()).error.message; } catch (e) {}
+        if (mIdx < modelsToTry.length - 1) break; // تجربة النموذج البديل
+        throw { message: 'خطأ من Gemini: ' + (m || r.status) };
+      }
+      
+      const j = await r.json();
+      const txt = (j.candidates && j.candidates[0] && j.candidates[0].content ? j.candidates[0].content.parts : []).map(x => x.text || '').join('');
+      try {
+        return JSON.parse(txt.replace(/```json|```/g, '').trim());
+      } catch (e) {
+        if (t < 1) continue;
+        if (mIdx < modelsToTry.length - 1) break;
+        throw { message: 'الرد جاء بصيغة غير صحيحة، جرّب تاني.' };
+      }
+    }
   }
-  throw{message:'وصلت للحد المجاني (طلبات كتير في الدقيقة). استنى شوية وجرّب تاني.'};
+  throw { message: 'فشل في الحصول على السؤال. تأكد من المفتاح أو اتصال الإنترنت.' };
 }
+
+const LG=['الدوري الإنجليزي','الدوري الإسباني','الدوري الإيطالي','الدوري الألماني','الدوري الفرنسي','دوري أبطال أوروبا','كأس العالم','كأس الأمم الأفريقية','الدوري المصري','كوبا أمريكا','اليورو','دوري أبطال أفريقيا','الدوري السعودي','الدوري الهولندي','الدوري البرتغالي','الدوري التركي','الدوري البرازيلي','الدوري الأرجنتيني'];
+const ER=['١٩٩٨ إلى ٢٠٠٤','٢٠٠٥ إلى ٢٠١٠','٢٠١١ إلى ٢٠١٦','٢٠١٧ إلى ٢٠٢٢','آخر ٣ سنين'];
+const POS=['حراس مرمى','مدافعين','لاعبين وسط','أجنحة','مهاجمين صريحين','لاعبين اتنقلوا كتير','لاعبين دوليين من أفريقيا','لاعبين من أمريكا الجنوبية'];
+const ANG=['أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم معين','أصغر الهدافين سناً في بطولة','أكتر لاعبين لعبوا في أندية مختلفة','أكتر لاعبين سجلوا هاتريك','أكتر لاعبين أخدوا كروت صفرا','أكتر حراس حافظوا على نظافة شباكهم','أكتر مدربين فازوا ببطولة','أكتر لاعبين خاضوا مباريات','أكتر لاعبين سجلوا من ضربات حرة','أكتر لاعبين سجلوا أهداف في النهائيات'];
+const GT=['كأس العالم','دوري أبطال أوروبا','الدوري الإنجليزي','الليجا','الكالتشو','البوندسليجا','الكرة المصرية','الكرة العربية والأفريقية','انتقالات اللاعبين','المدربين','أرقام قياسية','الجوائز الفردية','الملاعب وتاريخ الأندية','اليورو وكوبا أمريكا','حراس المرمى','أساطير من ١٩٩٨ لحد النهارده','مباريات ولحظات تاريخية','قوانين وأسرار كرة القدم'];
+
+const usedL=(k,n)=>S.used[k].slice(-n).join(' | ')||'لسه مفيش';
+const pk=(a,n=1)=>[...a].sort(()=>Math.random()-.5).slice(0,n);
+
 const PROMPTS={
- top:()=>`إنت مقدم مسابقات كرة قدم. اعمل سؤال "توب ١٠" كريتيف وصعب شوية عن كرة القدم، مش سؤال عادي زي "أكتر هدافين في التاريخ". أفكار: أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم أو دوري معين، أكتر لاعبين لعبوا مع أندية مختلفة في كأس عالم، أكتر هدافين في دور المجموعات لدوري الأبطال، أكتر مدربين فازوا ببطولات في فترة، أكتر لاعبين أخدوا كروت صفرا في موسم. اختار موسم أو بطولة أو زاوية مختلفة كل مرة، ولازم تكون متأكد إن الأرقام والترتيب صح (لو مش متأكد اختار زاوية تانية). مختلف عن: ${S.used.top.slice(-8).join(' | ')||'لسه مفيش'}. رجّع JSON بس: {"q":"عنوان السؤال بالعربي","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو المعلومة"}]} وفيه ١٠ عناصر مرتبة من r=1 لـ r=10، حيث r=1 هو الأسهل والأشهر والأعلى في الأرقام، وr=10 هو الأصعب والأقل ظهوراً.`,
- pw:()=>`هات ١٠ لاعبين كرة قدم أسماء صعبة شوية، يعني معروفين لمتابعي الكورة بس مش أشهر نجوم العالم: ممنوع ميسي ورونالدو ونيمار وصلاح ومبابي وزيدان ومارادونا وبيليه وأمثالهم. من أجيال ودوريات مختلفة (مدافعين وحراس ووسط مش بس مهاجمين)، بأسمائهم بالعربي، ومش من دول: ${S.used.pw.slice(-30).join('، ')||'لسه مفيش'}. رجّع JSON بس: {"p":["الاسم",...]}`,
- who:()=>`اختار لاعب كرة قدم معروف لعشاق الكورة بس مش من أشهر ٢٠ اسم في العالم، ومش من دول: ${S.used.who.slice(-15).join('، ')||'لسه مفيش'}. اعمل "مين أنا؟" صعبة بـ ٥ هينتات بالعربي المصري من غير ذكر الاسم. التدرج: ١) تفصيلة غريبة وبعيدة جداً مش بتدل على اللاعب. ٢) معلومة عن بداياته أو أول نادي. ٣) معلومة عن مركز أو أرقام أو بطولة، بتنطبق على لاعبين كتير. ٤) معلومة أدق بتضيّق الاختيارات. ٥) هينت قوي لكن محتاج تفكير. رجّع JSON بس: {"n":"اسم اللاعب","h":["١","٢","٣","٤","٥"]}`,
- grid:()=>`إنت مقدم مسابقات كرة قدم. اعمل لعبة "الجدول": ٤ كاتيجوري مختلفة ومتنوعة (كأس العالم، دوريات، أساطير، أرقام قياسية، الكرة المصرية والعربية، أندية، مدربين، انتقالات...) ومختلفة عن: ${S.used.grid.slice(-12).join('، ')||'لسه مفيش'}. كل كاتيجوري فيها ٨ أسئلة: سؤالين p=10 سهلين، سؤالين p=20 متوسطين، سؤالين p=30 صعبين، سؤالين p=40 صعبين جداً. كل سؤال بالعربي المصري وليه إجابة قصيرة ومؤكدة ١٠٠٪. رجّع JSON بس: {"cats":[{"n":"اسم الكاتيجوري","qs":[{"p":10,"q":"السؤال","a":"الإجابة"}]}]}`
+top:()=>`إنت مقدم مسابقات كرة قدم كريتيف. اعمل سؤال "توب ١٠" صعب شوية ومبتكر. 
+الفكرة: ${pk(ANG)[0]}. المجال: ${pk(LG)[0]}. الفترة: ${pk(ER)[0]}. 
+مهم جداً: الإجابات يجب أن تكون قصيرة ومحددة. 
+مختلف عن: ${usedL('top',25)}. 
+رجّع JSON بس: {"q":"عنوان السؤال بالعربي","o":"شرح الترتيب (مثال: من الأكتر للأقل)","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو المعلومة"}]} 
+فيه ١٠ عناصر مرتبة من r=1 لـ r=10.`,
+
+pw:()=>`هات ١٤ لاعب كرة قدم بأسمائهم بالعربي، معروفين لمتابعي الكورة المتعمقين بس مش من أشهر ٨٠ لاعب في التاريخ. 
+ممنوع الأسماء الكبيرة (ميسي، رونالدو، نيمار، صلاح، مبابي، زيدان، مارادونا، بيليه، هالاند، دي بروين، مودريتش، بنزيما، روني، بيكهام، هنري، رونالدينيو). 
+نوّع: ${pk(POS,2).join(' و')}، ومن فترة ${pk(ER)[0]}. 
+ممنوع التكرار وممنوع الأسماء دي: ${S.used.pw.slice(-120).join('، ')||'لسه مفيش'}. 
+ممنوع أي معلومات قبل سنة ١٩٩٨.
+رجّع JSON بس: {"p":["الاسم",...]}`,
+
+who:()=>`اختار لاعب كرة قدم معروف لعشاق الكورة بس مش من أشهر ٣٠ اسم في العالم، يفضّل يكون مرتبط بـ ${pk(LG)[0]} ومن فترة ${pk(ER)[0]}، ومش من دول: ${S.used.who.slice(-60).join('، ')||'لسه مفيش'}. 
+اعمل "مين أنا؟" صعبة بـ ٥ هينتات بالعربي المصري من غير ذكر الاسم نهائياً. 
+التدرج: ١) تفصيلة غريبة وبعيدة جداً. ٢) معلومة عن بداياته. ٣) معلومة عن مركز أو أرقام بتنطبق على عشرات اللاعبين. ٤) معلومة بتضيّق الاختيارات لكن لسه بتنطبق على أكتر من ٥ لاعبين. ٥) هينت محتاج تفكير بيضيّق الاختيارات لـ ٢ أو ٣ لاعبين بالكتير، ومتحطش فيه لقب شهير ولا لحظة أيقونية. 
+ممنوع أي معلومات قبل سنة ١٩٩٨.
+رجّع JSON بس: {"n":"اسم اللاعب","h":["١","٢","٣","٤","٥"]}`,
+
+grid:()=>`أنت مقدم مسابقات كرة قدم. اعمل لعبة "الجدول" بـ ٤ كاتيجوري: ${pk(GT,4).join(' | ')}. مختلف عن: ${usedL('grid',16)}.
+كل كاتيجوري فيها ٨ أسئلة: سؤالين ١٠ (سهل)، سؤالين ٢٠ (متوسط)، سؤالين ٣٠ (صعب)، سؤالين ٤٠ (صعب جداً ونادر).
+ممنوع أي معلومات قبل سنة ١٩٩٨.
+هام جداً لتسريع التوليد: الإجابة يجب أن تكون قصيرة جداً (كلمة أو اثنتين كحد أقصى).
+رجّع JSON بس: {"cats":[{"n":"اسم الكاتيجوري","qs":[{"p":10,"q":"السؤال","a":"الإجابة"}]}]}`
 };
+
 try{const u=JSON.parse(localStorage.getItem('sk_used')||'null');if(u)for(const k in S.used)if(Array.isArray(u[k]))S.used[k]=u[k].slice(-300)}catch(e){}
 function saveUsed(){try{localStorage.setItem('sk_used',JSON.stringify(S.used))}catch(e){}}
-const pk=(a,n=1)=>[...a].sort(()=>Math.random()-.5).slice(0,n);
-const LG=['الدوري الإنجليزي','الدوري الإسباني','الدوري الإيطالي','الدوري الألماني','الدوري الفرنسي','دوري أبطال أوروبا','كأس العالم','كأس الأمم الأفريقية','الدوري المصري','كوبا أمريكا','اليورو','دوري أبطال أفريقيا','الدوري السعودي','الدوري الهولندي','الدوري البرتغالي','الدوري التركي','الدوري البرازيلي','الدوري الأرجنتيني','الدوري الأسكتلندي','الدوري البلجيكي','الدوري الأمريكي'];
-const ER=['الستينات والسبعينات','الثمانينات','التسعينات','أول الألفينات','نص الألفينات','٢٠١٠ إلى ٢٠١٥','آخر ٥ سنين'];
-const POS=['حراس مرمى','مدافعين','لاعبين وسط','أجنحة','مهاجمين صريحين','لاعبين اتنقلوا كتير','لاعبين دوليين من أفريقيا','لاعبين من أمريكا الجنوبية','لاعبين من شرق أوروبا','لاعبين من أسكندنافيا'];
-const ANG=['أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم أو دوري معين','أصغر الهدافين سناً في بطولة','أكتر لاعبين لعبوا في أندية مختلفة','أكتر لاعبين سجلوا هاتريك','أكتر لاعبين أخدوا كروت صفرا','أكتر حراس حافظوا على نظافة شباكهم','أكتر مدربين فازوا ببطولة','أكتر لاعبين خاضوا مباريات','أكتر لاعبين سجلوا من ضربات حرة','أكتر لاعبين سجلوا أهداف في النهائيات','أكتر اللاعبين تسجيلاً كبدلاء','أكتر لاعبين صنعوا أهداف (أسيستات) في موسم','أكتر لاعبين سجلوا بالرأس','أكتر لاعبين شاركوا في كئوس عالم','أكتر لاعبين سجلوا ضد فريق معين'];
-const GT=['كأس العالم','دوري أبطال أوروبا','الدوري الإنجليزي','الليجا','الكالتشو','البوندسليجا','الكرة المصرية','الكرة العربية والأفريقية','انتقالات اللاعبين','المدربين','أرقام قياسية','الجوائز الفردية (الكرة الذهبية والحذاء الذهبي)','الملاعب وتاريخ الأندية','اليورو وكوبا أمريكا','حراس المرمى','أساطير الثمانينات والتسعينات','مباريات ولحظات تاريخية','قوانين وأسرار كرة القدم','الأندية الأوروبية الصغيرة','الدوري الفرنسي والهولندي والبرتغالي'];
-const usedL=(k,n)=>S.used[k].slice(-n).join(' | ')||'لسه مفيش';
-Object.assign(PROMPTS,{
-top:()=>`إنت مقدم مسابقات كرة قدم كريتيف. اعمل سؤال "توب ١٠" صعب شوية ومبتكر، مش سؤال عادي. الفكرة المطلوبة: ${pk(ANG)[0]}. المجال: ${pk(LG)[0]}. الفترة: ${pk(ERT)[0]}. عدّل الفكرة والمجال لو مش متأكد من الأرقام — المهم الأرقام والترتيب تكون صح ١٠٠٪. عنوان السؤال لازم يحدد البطولة والموسم أو الفترة بوضوح. مختلف عن: ${usedL('top',25)}. رجّع JSON بس: {"q":"عنوان السؤال بالعربي","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو المعلومة","y":"الموسم أو السنة بتاعة الرقم"}]} وفيه ١٤ عنصر مرتبين من r=1 لـ r=14، وكل اسم يظهر مرة واحدة بس (لو الاسم ظهر في أكتر من موسم خد ظهوره الأحدث بس)، حيث r=1 هو الأسهل والأشهر والأعلى في الأرقام، وr=10 هو الأصعب والأقل ظهوراً.`,
-pw:()=>`هات ١٤ لاعب كرة قدم (قدامى وحاليين) بأسمائهم بالعربي، بشرط يكونوا معروفين لمتابعي الكورة المتعمقين بس مش من أشهر ٨٠ لاعب في التاريخ. ممنوع الأسماء الكبيرة (ميسي، رونالدو، نيمار، صلاح، مبابي، زيدان، مارادونا، بيليه، هالاند، دي بروين، مودريتش، بنزيما، روني، بيكهام، إنييستا، تشافي، هنري، رونالدينيو وأمثالهم). نوّع: ${pk(POS,2).join(' و')}، ومن ${pk(LG,3).join(' و')}، ومن فترة ${pk(ER)[0]}. ممنوع التكرار وممنوع الأسماء دي: ${S.used.pw.slice(-120).join('، ')||'لسه مفيش'}. رجّع JSON بس: {"p":["الاسم",...]}`,
-who:()=>`اختار لاعب كرة قدم معروف لعشاق الكورة بس مش من أشهر ٣٠ اسم في العالم، يفضّل يكون مرتبط بـ ${pk(LG)[0]} ومن فترة ${pk(ER)[0]}، ومش من دول: ${S.used.who.slice(-60).join('، ')||'لسه مفيش'}. اعمل "مين أنا؟" صعبة بـ ٥ هينتات بالعربي المصري من غير ذكر الاسم نهائياً. التدرج: ١) تفصيلة غريبة وبعيدة جداً مش بتدل على اللاعب. ٢) معلومة عن بداياته أو أول نادي. ٣) معلومة عن مركز أو أرقام أو بطولة، بتنطبق على عشرات اللاعبين. ٤) معلومة بتضيّق الاختيارات لكن لسه بتنطبق على أكتر من ٥ لاعبين ومتدلش على اللاعب بسهولة. ٥) هينت محتاج تفكير: بيضيّق الاختيارات لـ ٢ أو ٣ لاعبين بالكتير، ومتحطش فيه لقب شهير ولا لحظة أيقونية ولا نادي وسنة مع بعض ولا أي حاجة بتكشف الاسم بسرعة. رجّع JSON بس: {"n":"اسم اللاعب","h":["١","٢","٣","٤","٥"]}`,
-grid:()=>`إنت مقدم مسابقات كرة قدم محترف. اعمل لعبة "الجدول" بـ ٤ كاتيجوري دي بالظبط: ${pk(GT,4).join(' | ')}. ومختلفة عن اللي فات: ${usedL('grid',16)}. كل كاتيجوري فيها ٨ أسئلة: سؤالين p=10 (سهلة: أي متابع كورة بيعرفها)، سؤالين p=20 (متوسطة)، سؤالين p=30 (صعبة جداً: محتاجة متابع خبير بيحفظ التفاصيل: أرقام دقيقة أو سنين أو أسماء مش مشهورة أو مباريات محددة)، سؤالين p=40 (أصعب الأصعب: معلومات نادرة جداً حتى المتابع المحترف هيتردد فيها: إحصائية دقيقة أو حدث غامض أو لاعب مجهول نسبياً أو تفصيلة صغيرة في مباراة بعينها، وإجابتها مؤكدة ومحددة). الصعوبة تتدرج بوضوح من السهل للصعب، وممنوع تبقى أسئلة ١٠ صعبة. كل سؤال بالعربي المصري، إجابته قصيرة وواضحة ومؤكدة ١٠٠٪ ومالهاش أكتر من إجابة صح. لو مش متأكد من معلومة غيّر السؤال. رجّع JSON بس: {"cats":[{"n":"اسم الكاتيجوري","qs":[{"p":10,"q":"السؤال","a":"الإجابة"}]}]}`
-});
-ER.length=0;ER.push('١٩٩٨ إلى ٢٠٠٤','٢٠٠٥ إلى ٢٠١٠','٢٠١١ إلى ٢٠١٦','٢٠١٧ إلى ٢٠٢٢','آخر ٣ سنين','١٩٩٨ لحد النهارده');
-GT.forEach((t,i)=>{if(t.includes('الثمانينات'))GT[i]='أساطير ونجوم من ١٩٩٨ لحد النهارده'});
-const ERA98=' شرط أساسي: كل الأسئلة والأسماء والإحصائيات والأحداث لازم تكون من موسم ١٩٩٨ لحد النهارده بس، وممنوع أي حاجة قبل ١٩٩٨ (مفيش لاعبين أو مدربين أو أحداث أو أرقام قبل كده، ولاعب بدأ قبل ١٩٩٨ يتحسب بس بإنجازاته من ١٩٩٨ وبعد). لو الفكرة محتاجة بيانات قديمة غيّرها.';
-['pw','who','grid'].forEach(k=>{const f=PROMPTS[k];PROMPTS[k]=()=>f()+ERA98});
-const ERT=['الستينات والسبعينات','الثمانينات','التسعينات','أول الألفينات','نص الألفينات','٢٠١٠ إلى ٢٠١٥','آخر ٥ سنين','كل العصور'];
-const TOPFIX=' مهم جداً: الترتيب لازم يكون واضح ومنطقي. حط في الحقل o (من غير تكرار السؤال) جملة قصيرة بتقول الترتيب ماشي إزاي بالظبط (مثلاً "مرتبين من الأكتر للأقل" أو "مرتبين من الأحدث للأقدم"). لو السؤال عن أرقام أو عدد، رتّب من الأكبر للأصغر (r=1 هو الأكتر). لو السؤال عن سنين أو مواسم أو فايزين بالبطولة، رتّب من الأحدث للأقدم (r=1 هو الأحدث). اختار زاوية أرقامها مختلفة من غير تعادل، وحط الرقم أو السنة في s عشان الترتيب يبان. الشكل النهائي: {"q":"..","o":"..","items":[..]}. مش لازم الأسئلة تبقى من ١٩٩٨ لحد دلوقتي، ممكن أي فترة.';
-const _tp=PROMPTS.top;PROMPTS.top=()=>_tp()+TOPFIX+(Math.random()<.85?' نوع الترتيب المطلوب المرة دي: بالعدد أو الأرقام من الأكتر للأقل (مش زمني). ممنوع الترتيب بالأحدث للأقدم المرة دي.':' نوع الترتيب المطلوب المرة دي: زمني من الأحدث للأقدم.');
+
 const PRE={};
 function prefetch(m){if(!m||PRE[m]||!gk())return;PRE[m]=ask(PROMPTS[m]()).catch(()=>null)}
+
 async function load(){
-  stopT();S.loading=true;S.err='';S.sel=null;S.rev=false;S.exp=false;render();const t0=Date.now();clearInterval(window.lt);window.lt=setInterval(()=>{const e=document.getElementById('le');if(e)e.textContent=Math.round((Date.now()-t0)/1000)+' ثانية'},1000);
+  stopT();S.loading=true;S.err='';S.sel=null;S.rev=false;S.exp=false;render();
+  const t0=Date.now();
+  clearInterval(window.lt);
+  window.lt=setInterval(()=>{
+    const e=document.getElementById('le');
+    if(e) e.textContent=`جاري التوليد بدقة... ${Math.round((Date.now()-t0)/1000)} ثانية ⏳`;
+  }, 500);
+  
   try{
-    let d=PRE[S.mode];delete PRE[S.mode];d=d?await d:null;if(!d)d=await ask(PROMPTS[S.mode]());
+    let d=PRE[S.mode];
+    delete PRE[S.mode];
+    d=d?await d:null;
+    if(!d) d=await ask(PROMPTS[S.mode]());
+    
     if(S.mode==='top'){
-      {const m={};(d.items||[]).forEach(it=>{const k=String(it.n).replace(/[\u064B-\u0652ـ]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/\s+/g,' ').trim().toLowerCase();if(!m[k]||(parseInt(it.y)||0)>=(parseInt(m[k].y)||0))m[k]=it});d.items=Object.values(m).sort((a,b)=>a.r-b.r).slice(0,10).map((it,i)=>({...it,r:i+1}))}
+      {const m={};(d.items||[]).forEach(it=>{const k=String(it.n).replace(/[\u064B-\u0652ـ]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/\s+/g,' ').trim().toLowerCase();if(!m[k])m[k]=it});d.items=Object.values(m).sort((a,b)=>a.r-b.r).slice(0,10).map((it,i)=>({...it,r:i+1}))}
       if(!d.items||d.items.length<10)throw{message:'السؤال جه ناقص'};
       S.q=d;S.found={};S.used.top.push(d.q);startT(60,topExp);
     }else if(S.mode==='pw'){
@@ -201,12 +269,15 @@ async function load(){
       S.g={cats,used:{},dbl:Math.floor(Math.random()*32),turn:0,cur:null,isD:false,ans:false};
     }
   }catch(e){S.err=(e&&e.message)||'حصلت مشكلة في تحميل السؤال'}
-  clearInterval(window.lt);S.loading=false;render();if(!S.err)setTimeout(()=>prefetch(S.mode),200);
+  
+  clearInterval(window.lt);S.loading=false;render();
+  if(!S.err)setTimeout(()=>prefetch(S.mode),200);
 }
+
 function go(m){stopT();S.mode=m;S.sc=[0,0];S.q=null;S.queue=[];S.g=null;S.winner=null;load()}
 function home(){stopT();S.mode=null;S.winner=null;S.sel=null;render()}
 function checkWin(){if(!GOAL[S.mode])return;[0,1].forEach(i=>{if(S.winner===null&&S.sc[i]>=GOAL[S.mode]){S.winner=i;S.w[i]++}});if(S.winner!==null)stopT()}
-// توب ١٠
+
 function pickRank(r){if(S.rev)return;S.sel=r;render()}
 function assign(t){
   const r=S.sel,old=S.found[r];
@@ -216,7 +287,7 @@ function assign(t){
   if(S.winner===null){S.q.items.every(it=>S.found[it.r]!==undefined)?stopT():startT(60,topExp)}
   render();
 }
-// باسورد / مين أنا
+
 function got(i){
   S.sc[i]+=1;beep(880,.15);checkWin();stopT();
   if(S.winner!==null)return render();
@@ -225,7 +296,7 @@ function got(i){
 function skipPw(){stopT();S.queue.shift();S.show=false;S.queue.length?render():load()}
 function togShow(){S.show=!S.show;S.show?startT(30,expR):stopT();render()}
 function more(){if(S.hi<5){S.hi++;startT(60,expR);render()}}
-// الجدول
+
 function openQ(c,i){const k=c*8+i;if(S.g.used[k]!==undefined)return;S.g.cur={c,i,k};S.g.ans=false;S.g.isD=k===S.g.dbl;startT(60,expR);render()}
 function backQ(){S.g.cur=null;stopT();render()}
 function gAward(t){
@@ -235,10 +306,12 @@ function gAward(t){
   if(Object.keys(g.used).length>=32){const[a,b]=S.sc;S.winner=a===b?2:a>b?0:1;if(S.winner<2)S.w[S.winner]++}
   render();
 }
+
 function hud(home){
   const tp=i=>`<div class="tp ${i?'b':'a'} ${S.g&&S.mode==='grid'&&S.g.turn===i&&S.winner===null?'on':''}"><span>${esc(S.t[i])}</span><b>${home?S.w[i]:S.sc[i]}</b><small>${home?'🏅 كاتيجوري':(GOAL[S.mode]?'الهدف '+GOAL[S.mode]+' • ':'')+'🏅 '+S.w[i]}</small></div>`;
   return `<div class="hud">${tp(0)}<div class="mid">${(!home&&S.tl!==null&&!(S.mode==='grid'&&S.g&&S.g.cur))?tbox():'<span class="vs">VS</span>'}</div>${tp(1)}</div>`;
 }
+
 function render(){
   if(!S.mode){
     const m=(f,i,n,s,c1,c2,c3)=>`<button class="mc" style="--c1:${c1};--c2:${c2};--c3:${c3}" onclick="pick('${f}')"><i>${i}</i><b>${n}</b><small>${s}</small></button>`;
@@ -251,9 +324,10 @@ function render(){
   }
   let body='',sheet='';
   const exb=S.exp?'<div class="ex">⏰ الوقت خلص!</div>':'';
-  if(S.loading)body=`<div class="card load"><span>⚽</span><p>بنجهّز الأسئلة...</p><p class="mu" id="le"></p></div>`;
-  else if(S.err)body=`<div class="card"><p class="err">⚠️ ${esc(S.err)}</p><button class="w" onclick="load()">جرّب تاني</button></div>`;
-  else if(S.winner!==null)body=`<div class="card win"><div style="font-size:64px">${S.winner===2?'🤝':'🏆'}</div><h2>${S.winner===2?'تعادل!':esc(S.t[S.winner])+' كسب كاتيجوري '+NAMES[S.mode]+'!'}</h2><button class="w" onclick="home()">رجوع للقايمة</button></div>`;
+  
+  if(S.loading) body=`<div class="card load"><span>⚽</span><p>بنجهّز الأسئلة بدقة...</p><p class="mu" id="le" style="animation:pl 1s infinite alternate">جاري الاتصال بـ Gemini ⏳</p></div>`;
+  else if(S.err) body=`<div class="card"><p class="err">⚠️ ${esc(S.err)}</p><button class="w" onclick="load()">جرّب تاني</button></div>`;
+  else if(S.winner!==null) body=`<div class="card win"><div style="font-size:64px">${S.winner===2?'🤝':'🏆'}</div><h2>${S.winner===2?'تعادل!':esc(S.t[S.winner])+' كسب كاتيجوري '+NAMES[S.mode]+'!'}</h2><button class="w" onclick="home()">رجوع للقايمة</button></div>`;
   else if(S.mode==='top'&&S.q){
     body=`<div class="card"><p class="q">${esc(S.q.q)}</p>${S.q.o?`<div class="ord">📊 ${esc(S.q.o)}</div>`:''}<p class="mu">دوس على الإجابة اللي اتجابت واختار الفريق</p>${S.rev?'<div class="ex">⏰ الوقت خلص! الإجابات اتكشفت</div>':''}`+
     [...S.q.items].sort((a,b)=>a.r-b.r).map(it=>{const f=S.found[it.r];const x=f===undefined&&S.rev;
@@ -295,13 +369,33 @@ function render(){
   $.innerHTML=`<div class="top"><button class="sec" onclick="home()">→ القايمة</button><b>${NAMES[S.mode]}</b><span style="width:92px"></span></div>`+hud(false)+body+sheet;
   paint();
 }
+
 function pick(m){
   const a=document.getElementById('n0'),b=document.getElementById('n1');
   saveKey();S.t=[a.value.trim()||'الفريق الأحمر',b.value.trim()||'الفريق الأزرق'];
   go(m);
 }
-const _r=render;render=function(){saveUsed();_r();if(S.winner===null)S.cf=0;else if(S.winner<2&&!S.cf){S.cf=1;confetti()}};
-function confetti(){const c=['#ffc928','#22e07a','#ff4b55','#3b8cff','#a855f7'];for(let i=0;i<50;i++){const e=document.createElement('i');e.className='cf';e.style.cssText=`left:${Math.random()*100}vw;background:${c[i%5]};animation-delay:${Math.random()*.8}s;animation-duration:${2+Math.random()*2}s`;document.body.appendChild(e);setTimeout(()=>e.remove(),5000)}beep(660,.15);setTimeout(()=>beep(880,.25),180)}
+
+const _r=render;
+render=function(){
+  saveUsed();
+  _r();
+  if(S.winner===null) S.cf=0;
+  else if(S.winner<2 && !S.cf){
+    S.cf=1;
+    const c=['#ffc928','#22e07a','#ff4b55','#3b8cff','#a855f7'];
+    for(let i=0;i<50;i++){
+      const e=document.createElement('i');
+      e.className='cf';
+      e.style.cssText=`left:${Math.random()*100}vw;background:${c[i%5]};animation-delay:${Math.random()*.8}s;animation-duration:${2+Math.random()*2}s`;
+      document.body.appendChild(e);
+      setTimeout(()=>e.remove(),5000);
+    }
+    beep(660,.15);
+    setTimeout(()=>beep(880,.25),180);
+  }
+};
+
 render();
 </script>
 </body>
