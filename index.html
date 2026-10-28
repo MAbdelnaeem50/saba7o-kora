@@ -810,7 +810,7 @@ function normalizeTop(d){
     }));
 
   // تم التعديل: القبول من 8 فأكثر
-  if(items.length < 8) throw {message:'السؤال جه ناقص (جينا بـ '+items.length+' بس، بنحتاج 8 على الأقل)'};
+  if(items.length < 9) throw {message:'السؤال جه ناقص (جينا بـ '+items.length+' بس، بنحتاج 8 على الأقل)'};
   if(items.some(it=>!it.n)) throw {message:'في اسم فاضي في التوب'};
   if(items.some(it=>hasHedge(it.n)||hasHedge(it.s))) throw {message:'السؤال فيه كلام تقريبي'};
 
