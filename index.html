@@ -132,25 +132,39 @@ const gm=()=>{try{const m=localStorage.getItem('sk_gmodel');return(!m||m==='gemi
 function saveKey(){const k=document.getElementById('gk').value.trim(),m=document.getElementById('gmd').value.trim()||DM;try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}const b=document.getElementById('gsv');if(b)b.textContent='✅ اتحفظ'}
 let GCI=0;
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
-async function ask(p){
+const CFGS=[{thinkingConfig:{thinkingLevel:'low'}},{thinkingConfig:{thinkingLevel:'LOW'}},{thinkingConfig:{thinkingBudget:0}},{}];
+async function ask(p,tmo=45000){
   const key=gk();
   if(!key)throw{message:'ضيف مفتاح Gemini الأول من الشاشة الرئيسية.'};
-  const cfgs=[{thinkingConfig:{thinkingLevel:'minimal'}},{thinkingConfig:{thinkingBudget:0}},{}];
-  for(let t=0;t<4;t++){
-    const ac=new AbortController(),to=setTimeout(()=>ac.abort(),60000);
+  let last='';
+  for(let t=0;t<5;t++){
+    const ac=new AbortController(),to=setTimeout(()=>ac.abort(),tmo);
     let r;
-    try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gm()}:generateContent`,{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json',temperature:1,...cfgs[GCI]}})})}
-    catch(e){clearTimeout(to);if(t<3)continue;throw{message:'Gemini اتأخر قوي. دوس جرّب تاني.'}}
+    try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gm()}:generateContent`,{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json',...CFGS[GCI]}})})}
+    catch(e){clearTimeout(to);last='Gemini اتأخر أكتر من '+Math.round(tmo/1000)+' ثانية';if(t<2)continue;throw{message:last+'. جرّب موديل أسرع (flash-lite) من الخانة فوق.'}}
     clearTimeout(to);
-    if(r.status===429||r.status===503){await sleep(3000*(t+1));continue}
+    if(r.status===429||r.status===503){last='الحد المجاني';await sleep(3000*(t+1));continue}
     if(!r.ok){let m='';try{m=(await r.json()).error.message}catch(e){}
-      if(r.status===400&&/think/i.test(m)&&GCI<cfgs.length-1){GCI++;t--;continue}
+      if(r.status===400&&GCI<CFGS.length-1){GCI++;last=m;continue}
       throw{message:'Gemini: '+(m||r.status)}}
     const j=await r.json();
-    const txt=(j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[]).map(x=>x.text||'').join('');
-    try{return JSON.parse(txt.replace(/```json|```/g,'').trim())}catch(e){if(t<3)continue;throw{message:'الرد جه بصيغة غلط، جرّب تاني'}}
+    const txt=(j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[]).filter(x=>!x.thought).map(x=>x.text||'').join('');
+    try{return JSON.parse(txt.replace(/```json|```/g,'').trim())}catch(e){last='الرد جه بصيغة غلط';if(t<3)continue;throw{message:last+'، جرّب تاني'}}
   }
-  throw{message:'وصلت للحد المجاني (طلبات كتير في الدقيقة). استنى شوية وجرّب تاني.'};
+  throw{message:last==='الحد المجاني'?'وصلت للحد المجاني (طلبات كتير في الدقيقة). استنى شوية وجرّب تاني.':(last||'مشكلة في الاتصال')};
+}
+async function testConn(){
+  const o=document.getElementById('gst');saveKey();o.textContent='⏳ بنجرّب...';const t0=Date.now();
+  try{const d=await ask('رجّع JSON بس: {"ok":true}',30000);o.textContent='✅ شغال — الموديل '+gm()+' رد في '+((Date.now()-t0)/1000).toFixed(1)+' ثانية'}
+  catch(e){o.textContent='❌ '+(e.message||e)}
+}
+async function listModels(){
+  const o=document.getElementById('gst');saveKey();o.textContent='⏳ بنجيب الموديلات...';
+  try{const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{headers:{'x-goog-api-key':gk()}});const j=await r.json();
+    if(!r.ok)throw{message:(j.error&&j.error.message)||r.status};
+    const l=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')&&/flash/.test(m.name)).map(m=>m.name.replace('models/',''));
+    o.textContent='موديلات flash المتاحة:\n'+(l.join('\n')||'مفيش')}
+  catch(e){o.textContent='❌ '+(e.message||e)}
 }
 const PROMPTS={
  top:()=>`إنت مقدم مسابقات كرة قدم. اعمل سؤال "توب ١٠" كريتيف وصعب شوية عن كرة القدم، مش سؤال عادي زي "أكتر هدافين في التاريخ". أفكار: أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم أو دوري معين، أكتر لاعبين لعبوا مع أندية مختلفة في كأس عالم، أكتر هدافين في دور المجموعات لدوري الأبطال، أكتر مدربين فازوا ببطولات في فترة، أكتر لاعبين أخدوا كروت صفرا في موسم. اختار موسم أو بطولة أو زاوية مختلفة كل مرة، ولازم تكون متأكد إن الأرقام والترتيب صح (لو مش متأكد اختار زاوية تانية). مختلف عن: ${S.used.top.slice(-8).join(' | ')||'لسه مفيش'}. رجّع JSON بس: {"q":"عنوان السؤال بالعربي","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو المعلومة"}]} وفيه ١٠ عناصر مرتبة من r=1 لـ r=10، حيث r=1 هو الأسهل والأشهر والأعلى في الأرقام، وr=10 هو الأصعب والأقل ظهوراً.`,
@@ -243,7 +257,7 @@ function render(){
   if(!S.mode){
     const m=(f,i,n,s,c1,c2,c3)=>`<button class="mc" style="--c1:${c1};--c2:${c2};--c3:${c3}" onclick="pick('${f}')"><i>${i}</i><b>${n}</b><small>${s}</small></button>`;
     $.innerHTML=`<div class="logo"><b>⚽</b><h1>صباحو كورة</h1><p>الأسئلة بتتولّد أونلاين من Gemini — اختار اللعبة</p></div>
-    <div class="card"><p class="mu" style="margin:0 0 8px">🔑 مفتاح Gemini (مجاني من aistudio.google.com/apikey) — بيتحفظ على جهازك بس</p><input id="gk" type="password" dir="ltr" placeholder="AQ.Ab..." value="${esc(gk())}"><input id="gmd" dir="ltr" value="${esc(gm())}" style="margin-top:8px"><button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button></div>
+    <div class="card"><p class="mu" style="margin:0 0 8px">🔑 مفتاح Gemini (مجاني من aistudio.google.com/apikey) — بيتحفظ على جهازك بس</p><input id="gk" type="password" dir="ltr" placeholder="AQ.Ab..." value="${esc(gk())}"><input id="gmd" dir="ltr" value="${esc(gm())}" style="margin-top:8px"><button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button><div class="row" style="margin-top:8px"><button class="sec" onclick="testConn()">اختبار الاتصال</button><button class="sec" onclick="listModels()">الموديلات المتاحة</button></div><pre id="gst" dir="auto" style="white-space:pre-wrap;color:var(--mu);font-size:13px;margin:8px 0 0"></pre></div>
     <div class="card"><div class="row"><input id="n0" value="${esc(S.t[0])}" maxlength="20"><input id="n1" value="${esc(S.t[1])}" maxlength="20"></div></div>
     ${hud(true)}
     <div class="menu">${m('top','🏆','توب ١٠','رقم ١ بنقطة … رقم ١٠ بـ ١٠ نقط • أول واحد لـ ١٠٠','#f5b50a','#d97706','#92400e')}${m('pw','🔑','باسورد','كلوز للفريق من غير الاسم • أول واحد لـ ٥','#22c55e','#15803d','#14532d')}${m('who','🕵️','مين أنا؟','٥ هينتات من الغامض للواضح • أول واحد لـ ٣','#a855f7','#6d28d9','#3b0764')}${m('grid','🧩','الجدول','٤ كاتيجوري • أسئلة بـ ١٠ و٢٠ و٣٠ و٤٠ • وفيه دبل!','#3b8cff','#1d4ed8','#172554')}</div>`;
