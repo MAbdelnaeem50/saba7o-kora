@@ -106,7 +106,6 @@ button.sec{border:1px solid #2f4d7c}
 .cf{position:fixed;top:-14px;width:9px;height:14px;z-index:30;pointer-events:none;animation:fall linear forwards}
 @keyframes fall{to{transform:translateY(110vh) rotate(720deg)}}
 .ord{background:#0a1628;border:2px solid var(--gold);color:var(--gold);border-radius:12px;text-align:center;font-weight:900;padding:6px 10px;margin:6px 0}
-.pv{display:inline-block;background:var(--g);color:#032313;font-weight:900;font-size:11px;padding:2px 8px;border-radius:99px;margin-inline-start:6px}
 </style>
 </head>
 <body>
@@ -129,7 +128,6 @@ const expR=()=>{S.exp=true;render()};
 const topExp=()=>{S.rev=true;render()};
 const tbox=()=>S.tl===null?'':`<div class="tm"><b class="tv">${S.tl}</b><div class="tbar"><s class="tf" style="width:${S.tl/S.max*100}%"></s></div></div>`;
 
-// ============ إدارة المفاتيح والنماذج ============
 const gk=()=>{try{return localStorage.getItem('sk_gkey')||''}catch(e){return ''}};
 const gp=()=>{try{return localStorage.getItem('sk_prov')||'groq'}catch(e){return 'groq'}};
 const gModel=()=>{
@@ -170,7 +168,6 @@ function setProv(p){
 
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
 
-// ============ استدعاء Groq API (الأسرع) ============
 async function askGroq(p,model){
   const key=gk();
   const r=await fetch('https://api.groq.com/openai/v1/chat/completions',{
@@ -193,7 +190,6 @@ async function askGroq(p,model){
   return JSON.parse(txt.replace(/```json|```/g,'').trim());
 }
 
-// ============ استدعاء Gemini API (احتياطي) ============
 async function askGemini(p,model){
   const key=gk();
   const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{
@@ -213,19 +209,18 @@ async function askGemini(p,model){
   return JSON.parse(txt.replace(/```json|```/g,'').trim());
 }
 
-// ============ الدالة الرئيسية مع نظام احتياطي ذكي ============
 async function ask(p){
   const key=gk();
   if(!key)throw{message:'ضيف مفتاح الـ API الأول من الشاشة الرئيسية.'};
   const prov=gp();
   const model=gModel();
   
-  // قائمة المحاولات: المزود الأساسي + النموذج الأساسي، ثم البدائل
+  // قائمة النماذج المضمونة والمتاحة فعلياً
   const attempts=[];
   if(prov==='groq'){
     attempts.push({fn:askGroq,m:model,n:'Groq • '+model});
     attempts.push({fn:askGroq,m:'llama-3.3-70b-versatile',n:'Groq • Llama 3.3'});
-    attempts.push({fn:askGroq,m:'meta-llama/llama-4-scout',n:'Groq • Llama 4'});
+    attempts.push({fn:askGroq,m:'llama-3.1-8b-instant',n:'Groq • Llama 3.1'});
   }else{
     attempts.push({fn:askGemini,m:model,n:'Gemini • '+model});
     attempts.push({fn:askGemini,m:'gemini-1.5-flash',n:'Gemini • 1.5 Flash'});
