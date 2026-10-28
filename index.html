@@ -152,7 +152,7 @@ const HEDGE_PATTERNS=[
 const hasHedge=s=>HEDGE_PATTERNS.some(re=>re.test(String(s||'')));
 
 function topLooksGood(d){
-  if(!d||!Array.isArray(d.items)||d.items.length<8) return false; // تم التعديل: القبول من 8 فأكثر
+  if(!d||!Array.isArray(d.items)||d.items.length<7) return false; // تم التعديل: القبول من 8 فأكثر
   const fields=[d.q,d.o].concat(d.items.flatMap(it=>[it.n,it.s,it.y]));
   if(fields.some(hasHedge))return false;
   const sorted=[...d.items].sort((a,b)=>(parseInt(a.r)||99)-(parseInt(b.r)||99));
