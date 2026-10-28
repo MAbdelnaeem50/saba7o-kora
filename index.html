@@ -136,6 +136,98 @@ let iv=null,ac,flashTo=null;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pts=r=>r,ptx=r=>r===1?'نقطة':r===2?'نقطتين':r+' نقط';
 
+/* ============================================================
+   NEW: HEDGING DETECTION + STRUCTURAL VALIDATION
+   ============================================================ */
+const HEDGE_PATTERNS=[
+  /تقريب[اً]?\s*[\d٠-٩]/,
+  /حوالي\s*[\d٠-٩]/,
+  /من المحتمل/,
+  /يُقال|بيقال|يقال إن/,
+  /(^|\s)ربما(\s|$)/,
+  /قد يكون/,
+  /في الغالب/,
+  /أكثر من المحتمل/,
+  /approximately|probably|perhaps|roughly|circa/i,
+  /(around|about)\s+\d/i,
+  /\blikely\b/i
+];
+const hasHedge=s=>HEDGE_PATTERNS.some(re=>re.test(String(s||'')));
+
+function topLooksGood(d){
+  if(!d||!Array.isArray(d.items)||d.items.length<10)return false;
+  const fields=[d.q,d.o].concat(d.items.flatMap(it=>[it.n,it.s,it.y]));
+  if(fields.some(hasHedge))return false;
+  // order check when s is numeric
+  const sorted=[...d.items].sort((a,b)=>(parseInt(a.r)||99)-(parseInt(b.r)||99));
+  const nums=sorted.map(it=>{
+    const m=String(it.s||'').match(/-?\d+(?:[.,]\d+)?/);
+    return m?parseFloat(m[0].replace(',','.')):null;
+  });
+  if(nums.every(n=>n!==null)){
+    for(let i=1;i<nums.length;i++){
+      if(nums[i]>nums[i-1]+0.001)return false; // should be descending
+    }
+  }
+  return true;
+}
+
+function gridLooksGood(d){
+  if(!d||!Array.isArray(d.cats)||d.cats.length<4)return false;
+  for(const c of d.cats){
+    if(!c.n||!Array.isArray(c.qs)||c.qs.length<8)return false;
+    if(hasHedge(c.n))return false;
+    for(const q of c.qs){
+      if(!q.q||!q.a)return false;
+      if(hasHedge(q.q)||hasHedge(q.a))return false;
+    }
+  }
+  return true;
+}
+
+function trySortByS(items){
+  const nums=items.map(it=>{
+    const m=String(it.s||'').match(/-?\d+(?:[.,]\d+)?/);
+    return m?parseFloat(m[0].replace(',','.')):null;
+  });
+  if(nums.some(n=>n===null))return items;
+  return [...items].map((it,i)=>({it,v:nums[i]}))
+    .sort((a,b)=>b.v-a.v)
+    .map((x,i)=>({...x.it,r:i+1}));
+}
+
+/* JSON schema for Groq structured outputs */
+function jsonSchemaFor(mode){
+  if(mode==='top')return{type:'json_schema',json_schema:{name:'top10',strict:true,schema:{
+    type:'object',additionalProperties:false,required:['q','o','items'],
+    properties:{
+      q:{type:'string'},o:{type:'string'},
+      items:{type:'array',items:{type:'object',additionalProperties:false,required:['r','n','s','y'],
+        properties:{r:{type:'integer'},n:{type:'string'},s:{type:'string'},y:{type:'string'}}}}
+    }
+  }}};
+  if(mode==='grid')return{type:'json_schema',json_schema:{name:'grid',strict:true,schema:{
+    type:'object',additionalProperties:false,required:['cats'],
+    properties:{
+      cats:{type:'array',items:{type:'object',additionalProperties:false,required:['n','qs'],
+        properties:{
+          n:{type:'string'},
+          qs:{type:'array',items:{type:'object',additionalProperties:false,required:['p','q','a'],
+            properties:{p:{type:'integer'},q:{type:'string'},a:{type:'string'}}}}
+        }}}
+    }
+  }}};
+  if(mode==='pw')return{type:'json_schema',json_schema:{name:'pw',strict:true,schema:{
+    type:'object',additionalProperties:false,required:['p'],
+    properties:{p:{type:'array',items:{type:'string'}}}
+  }}};
+  if(mode==='who')return{type:'json_schema',json_schema:{name:'who',strict:true,schema:{
+    type:'object',additionalProperties:false,required:['n','h'],
+    properties:{n:{type:'string'},h:{type:'array',items:{type:'string'}}}
+  }}};
+  return null;
+}
+
 function beep(f,d){
   try{
     ac=ac||new(window.AudioContext||window.webkitAudioContext)();
@@ -333,9 +425,12 @@ const sleep=ms=>new Promise(z=>setTimeout(z,ms));
 const CFGS=[{thinkingConfig:{thinkingLevel:'low'}},{thinkingConfig:{thinkingBudget:0}},{}];
 let GCI=0;
 
-const FACT_RULES=`Today is 2026. Use only verified, well-known football facts from 1998 through 2026. The earliest allowed year/season is 1998, but a question may focus on one specific tournament, season, league, or period inside that range. Never invent statistics, dates, names, rankings, or numbers. If you are not 100% sure about a fact, replace it with a safer widely documented fact. Prefer tournament winners, top scorers of specific World Cups/Euros/AFCON, Ballon d'Or winners, Champions League winners, famous records, well-known player/manager stats, and widely reported seasonal stats. All user-facing strings must be in Egyptian Arabic unless explicitly asked otherwise.`;
+const FACT_RULES=`Today is 2026. Use ONLY verified, well-known football facts from 1998 through 2026. The earliest allowed year/season is 1998. Never invent statistics, dates, names, rankings, or numbers. NO HEDGING WORDS — never use "تقريباً/حوالي/من المحتمل/بيقال/ربما/likely/approximately/about/around". Answers must be exact numbers or exact facts. If you are not 100% sure, replace the fact with a safer widely documented one. All user-facing strings must be in Egyptian Arabic.`;
 
-async function once(prov,model,p,big,sig,key,attempt=0){
+/* ============================================================
+   MODIFIED once(): accepts mode for structured outputs
+   ============================================================ */
+async function once(prov,model,p,big,sig,key,attempt=0,mode=null){
   let r;
 
   if(prov==='groq'){
@@ -359,7 +454,13 @@ async function once(prov,model,p,big,sig,key,attempt=0){
       max_completion_tokens:maxTok
     };
 
-    if(attempt===0) payload.response_format={type:'json_object'};
+    if(attempt===0){
+      // NEW: try structured output first, fall back to json_object on attempt 1+
+      const sch=mode?jsonSchemaFor(mode):null;
+      payload.response_format=sch||{type:'json_object'};
+    }else{
+      payload.response_format={type:'json_object'};
+    }
 
     r=await fetch('https://api.groq.com/openai/v1/chat/completions',{
       method:'POST',
@@ -379,7 +480,7 @@ async function once(prov,model,p,big,sig,key,attempt=0){
         contents:[{parts:[{text:FACT_RULES+'\n'+p}]}],
         generationConfig:{
           responseMimeType:'application/json',
-          temperature:attempt===0?0.3:0,
+          temperature:attempt===0?0.2:0,
           maxOutputTokens:maxTok,
           ...CFGS[Math.min(GCI,CFGS.length-1)]
         }
@@ -422,7 +523,10 @@ async function once(prov,model,p,big,sig,key,attempt=0){
   return out;
 }
 
-async function ask(p,tmo){
+/* ============================================================
+   MODIFIED ask(): threads mode for schema + retries on schema 400
+   ============================================================ */
+async function ask(p,tmo,mode){
   const prov=gp(),key=gk();
   const big=p.includes('"cats"')||p.includes('"items"');
 
@@ -448,7 +552,7 @@ async function ask(p,tmo){
       const to=setTimeout(()=>ctrl.abort(),tmo);
 
       try{
-        const d=await once(prov,m,p,big,ctrl.signal,key,t);
+        const d=await once(prov,m,p,big,ctrl.signal,key,t,mode);
         clearTimeout(to);
         if(m!==chosen) LS('sk_model_'+gp(),m);
         return d;
@@ -472,7 +576,8 @@ async function ask(p,tmo){
           continue;
         }
 
-        if(err&&err.status===400&&/response_format|json_object/i.test(msg)){
+        // NEW: also retry when schema is rejected (falls back to json_object)
+        if(err&&err.status===400&&/response_format|json_object|json_schema|schema|additionalProperties|required/i.test(msg)){
           if(t<2)continue;
           break;
         }
@@ -495,16 +600,19 @@ async function ask(p,tmo){
   throw {message:(last&&last.message)||'فشل الاتصال. جرّب تاني.'};
 }
 
+/* ============================================================
+   MODIFIED review(): stronger prompts, threads mode
+   ============================================================ */
 async function review(mode,d){
   const json=JSON.stringify(d);
 
   if(mode==='grid'){
-    const p='You are a ruthless football fact-checker. Today is 2026. Verify this quiz grid JSON. Keep exactly the same structure: 4 cats, each cat exactly 8 qs. Replace any uncertain, weak, ambiguous, pre-1998, or possibly wrong question/answer with a 100% verified football fact from 1998 through 2026. Enforce difficulty strictly: first two questions p=10 must be very easy, next two p=20 medium to moderately hard, next two p=30 hard, last two p=40 very hard. Answers must be short, unique, and in Egyptian Arabic. Questions must be in Egyptian Arabic. Return only corrected JSON.\n\nJSON:\n'+json;
-    return await ask(p,75000);
+    const p='You are a RUTHLESS football fact-checker. Another AI generated this quiz grid. Your job is to INDEPENDENTLY verify and fix it.\n\nSTEP 1 — Read the 4 categories and think from your own knowledge: are these categories and their 8 questions each 100% correct for 1998-2026?\nSTEP 2 — Check EVERY question: is the answer unique, short, and correct? Is it really verifiable?\nSTEP 3 — If ANY question, answer, or category is uncertain, wrong, ambiguous, or pre-1998, REPLACE it with a safer 100% verified football fact.\nSTEP 4 — Difficulty must be strict: two p=10 easy, two p=20 medium, two p=30 hard, two p=40 very hard per category.\n\nHARD RULES:\n- NO hedging words (تقريباً، حوالي، من المحتمل، بيقال، ربما، likely، about, around).\n- Answers short, unique, in Egyptian Arabic.\n- Every fact must be 100% verifiable.\n- Return ONLY corrected JSON with same structure.\n\nJSON:\n'+json;
+    return await ask(p,75000,'grid');
   }
 
-  const p='You are a ruthless football fact-checker. Today is 2026. Verify this Top 10 JSON. Keep exactly the same structure: q, o, items. Every item must be a real, known, verified football fact from 1998 through 2026. The question may focus on one specific tournament/season/period, but no date/season earlier than 1998. Replace any uncertain, obscure, duplicated, or possibly wrong item with a safer verified one. Ensure ranking order is logically correct and explained in o. Keep names in Egyptian Arabic. Return only corrected JSON.\n\nJSON:\n'+json;
-  return await ask(p,65000);
+  const p='You are a RUTHLESS football fact-checker. Another AI generated this Top 10. Your job is to INDEPENDENTLY verify and fix it.\n\nSTEP 1 — Read the question. Think from your own knowledge: what ARE the actual top 10 for this question from 1998-2026?\nSTEP 2 — Compare with the given list. Check EVERY item:\n  • Is the name real and correct (Arabic spelling)?\n  • Is the statistic/year (s) exact and correct?\n  • Is the RANK ORDER (r) correct? r=1 must be the MOST (or NEWEST for time-based). Any item out of order → fix it.\n  • Any duplicate?\nSTEP 3 — If ANYTHING is uncertain, wrong, or out of order, FIX it. If too many errors, REPLACE the whole question with a safer one.\nSTEP 4 — Verify the final order is STRICTLY correct.\n\nHARD RULES:\n- NO hedging words (تقريباً، حوالي، من المحتمل، بيقال، ربما، likely، about, around).\n- Every s must be an exact number or exact fact.\n- Every item 100% verifiable from 1998-2026.\n- Names well-known to Arabic football fans.\n- Return ONLY corrected JSON with same structure.\n\nJSON:\n'+json;
+  return await ask(p,65000,'top');
 }
 
 async function testConn(){
@@ -590,7 +698,7 @@ const GT=[
 'دوري أبطال أوروبا 2000-2025',
 'الدوري الإنجليزي 1998-2025',
 'الليجا 1998-2025',
-'الكالتشو 1998-2025',
+'الكالتشيو 1998-2025',
 'البوندسليجا 1998-2025',
 'الكرة المصرية 1998-2025',
 'كأس الأمم الأفريقية 1998-2024',
@@ -615,7 +723,7 @@ const ERT=[
 
 const ERA98=' شرط أساسي: الحد الأدنى لأي سنة أو موسم أو حدث هو 1998، وممنوع أي حاجة قبل 1998. ممكن السؤال يكون عن سنة واحدة أو بطولة واحدة أو موسم واحد داخل الفترة دي.';
 
-const TOPFIX=' مهم: الترتيب لازم يكون واضح. حط في الحقل o جملة قصيرة تشرح الترتيب. لو أرقام رتب من الأكبر للأصغر (r=1 الأكتر). لو زمني رتب من الأحدث للأقدم (r=1 الأحدث). حط الرقم أو السنة في s. ممنوع أي اسم مغموض أو مجهول — كل الأسماء لازم تكون معروفة لمتابعي الكورة.';
+const TOPFIX=' مهم: الترتيب لازم يكون واضح ومؤكد 100%. حط في الحقل o جملة قصيرة تشرح اتجاه الترتيب (الأكبر للأصغر، أو الأحدث للأقدم، إلخ). حط في s رقم أو سنة قاطعة (ممنوع تقريباً/حوالي/من المحتمل — لازم رقم مؤكد). لو مش متأكد من الرقم، غيّر السؤال كله. r=1 لازم يكون الأكبر (أو الأحدث لو زمني). ممنوع أي اسم مغموض — كل الأسماء لازم تكون معروفة لمتابعي الكورة.';
 
 const PROMPTS={
   top:()=>`إنت مقدم مسابقات كرة قدم. اعمل سؤال "توب 10" صعب ومبتكر، قائم على إحصائية أو ترتيب معروف.
@@ -628,18 +736,17 @@ const PROMPTS={
 - أكثر اللاعبين مساهمة في الأهداف موسم 2022-2023
 - أكثر المنتخبات تسجيلا في يورو 2008
 - أكثر المنتخبات حصدا للنقاط في دور مجموعات كأس العالم منذ 1998
-- أكثر الأندية تسجيلا في موسم واحد بدوري أبطال أوروبا
 
-لو الزاوية فيها أرقام دقيقة ومش متأكد 100%، غيّرها لحقيقة أشهر في نفس النوع.
+ممنوع أي كلمات تقريبية زي (تقريباً/حوالي/من المحتمل/بيقال/ربما). الرقم لازم يكون قاطع 100%. لو مش متأكد من رقم دقيق، غيّر السؤال لحقيقة أشهر في نفس النوع.
 
 عنوان السؤال لازم يحدد البطولة/الموسم/الفترة بوضوح.
 
 مختلف عن: ${usedL('top',10)}.
 
-10 أسماء مختلفة بدون تكرار، وكلها معروفة.
+10 أسماء مختلفة بدون تكرار، وكلها معروفة، والترتيب مؤكد 100%.
 
 رجّع JSON بس:
-{"q":"عنوان السؤال بالعربي","o":"شرح الترتيب","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو السنة أو المعلومة","y":"السنة أو الموسم"}]}`+TOPFIX,
+{"q":"عنوان السؤال بالعربي","o":"شرح اتجاه الترتيب","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو السنة القاطعة","y":"السنة أو الموسم"}]}`+TOPFIX,
 
   pw:()=>`هات 14 لاعب كرة قدم بأسمائهم بالعربي.
 
@@ -661,7 +768,7 @@ const PROMPTS={
 
 مش من: ${S.used.who.slice(-40).join('، ')||'لسه مفيش'}.
 
-اعمل "مين أنا؟" بـ 5 هينتات بالعربي المصري بدون ذكر الاسم نهائيا.
+اعمل "مين أنا؟" بـ 5 هينتات بالعربي المصري بدون ذكر الاسم نهائيا. الهينتات كلها حقائق مؤكدة 100% — ممنوع تقريباً/حوالي/من المحتمل.
 
 اللاعب لازم يكون اسمه معروف — ممنوع لاعبين مجهولين.
 
@@ -688,7 +795,7 @@ const PROMPTS={
 
 كل سؤال وإجابة لازم يكون حقيقة مؤكدة 100% من 1998 إلى 2026.
 
-ممنوع أي سؤال أو إجابة قبل 1998.
+ممنوع أي سؤال أو إجابة قبل 1998. ممنوع أي كلمات تقريبية (تقريباً/حوالي/من المحتمل/بيقال/ربما) — الإجابة لازم تكون قاطعة 100%.
 
 ممكن كل سؤال يكون من سنة أو بطولة مختلفة داخل نفس الكاتيجوري.
 
@@ -700,6 +807,9 @@ const PROMPTS={
 {"cats":[{"n":"اسم الكاتيجوري بالعربي","qs":[{"p":10,"q":"السؤال بالعربي","a":"الإجابة بالعربي"}]}]}`+ERA98
 };
 
+/* ============================================================
+   MODIFIED normalizeTop(): auto-fix order from numeric s
+   ============================================================ */
 function normalizeTop(d){
   if(!d||!Array.isArray(d.items)) throw {message:'السؤال جه ناقص'};
 
@@ -720,7 +830,7 @@ function normalizeTop(d){
     if(!map[key]) map[key]=it;
   });
 
-  const items=Object.values(map)
+  let items=Object.values(map)
     .sort((a,b)=>(parseInt(a.r)||99)-(parseInt(b.r)||99))
     .slice(0,10)
     .map((it,i)=>({
@@ -732,6 +842,10 @@ function normalizeTop(d){
 
   if(items.length<10) throw {message:'السؤال جه ناقص ('+items.length+'/10)'};
   if(items.some(it=>!it.n)) throw {message:'في اسم فاضي في التوب 10'};
+  if(items.some(it=>hasHedge(it.n)||hasHedge(it.s))) throw {message:'السؤال فيه كلام تقريبي'};
+
+  // NEW: auto-fix ordering from numeric s
+  items=trySortByS(items);
 
   return {
     q:String(d.q||'سؤال توب 10').trim(),
@@ -775,9 +889,12 @@ const PRE={};
 
 function prefetch(m){
   if(!m||PRE[m]||!gk())return;
-  PRE[m]=ask(PROMPTS[m]()).catch(()=>null);
+  PRE[m]=ask(PROMPTS[m](),undefined,m).catch(()=>null);
 }
 
+/* ============================================================
+   MODIFIED load(): full retry loop with verification
+   ============================================================ */
 async function load(){
   stopT();
   S.loading=true;
@@ -797,29 +914,44 @@ async function load(){
     if(e) e.textContent=Math.round((Date.now()-t0)/1000)+' ثانية';
   },500);
 
+  const setLoading=(t)=>{const e=document.getElementById('le');if(e)e.textContent=t};
+
   try{
-    let d=PRE[S.mode];
-    delete PRE[S.mode];
-    d=d?await d:null;
-    if(!d) d=await ask(PROMPTS[S.mode]());
-
     if(S.mode==='top'){
-      if(S.strict){
-        const e=document.getElementById('le');
-        if(e) e.textContent='🔍 براجع دقة التوب 10...';
-        try{
-          const r=await review('top',d);
-          if(r&&Array.isArray(r.items)) d=r;
-        }catch(err){}
-      }
+      let d=PRE.top; delete PRE.top;
+      d=d?await d:null;
+      if(!d) d=await ask(PROMPTS.top(),undefined,'top');
 
-      const q=normalizeTop(d);
+      let final=null;
+      for(let attempt=0;attempt<3;attempt++){
+        if(topLooksGood(d)){
+          setLoading('🔍 براجع دقة التوب 10... (محاولة '+(attempt+1)+'/3)');
+          try{
+            const r=await review('top',d);
+            if(r&&topLooksGood(r)){
+              final=r;
+              break;
+            }
+          }catch(e){/* review failed, try regenerate */}
+        }
+        if(attempt<2){
+          setLoading('🔄 السؤال مش دقيق، بجيب واحد تاني... ('+(attempt+2)+'/3)');
+          d=await ask(PROMPTS.top(),undefined,'top');
+        }
+      }
+      if(!final) final=d;
+
+      const q=normalizeTop(final);
       S.q=q;
       S.found={};
       S.used.top.push(q.q);
       startT(60,topExp);
 
     }else if(S.mode==='pw'){
+      let d=PRE.pw; delete PRE.pw;
+      d=d?await d:null;
+      if(!d) d=await ask(PROMPTS.pw(),undefined,'pw');
+
       if(!d||!Array.isArray(d.p)) throw {message:'الرد جه غلط، جرّب تاني'};
 
       S.queue=d.p.filter(x=>!S.used.pw.includes(x));
@@ -832,6 +964,10 @@ async function load(){
       S.show=false;
 
     }else if(S.mode==='who'){
+      let d=PRE.who; delete PRE.who;
+      d=d?await d:null;
+      if(!d) d=await ask(PROMPTS.who(),undefined,'who');
+
       if(!d||!d.n||!Array.isArray(d.h)||d.h.length<5) throw {message:'اللغز جه ناقص'};
 
       S.q=d;
@@ -841,16 +977,31 @@ async function load(){
       startT(60,expR);
 
     }else{
-      // مراجعة الجدول إلزامية دائما
-      const e=document.getElementById('le');
-      if(e) e.textContent='🔍 براجع دقة الجدول...';
+      // grid: mandatory review + retry
+      let d=PRE.grid; delete PRE.grid;
+      d=d?await d:null;
+      if(!d) d=await ask(PROMPTS.grid(),undefined,'grid');
 
-      try{
-        const r=await review('grid',d);
-        if(r&&Array.isArray(r.cats)) d=r;
-      }catch(err){}
+      let final=null;
+      for(let attempt=0;attempt<3;attempt++){
+        setLoading('🔍 براجع دقة الجدول... (محاولة '+(attempt+1)+'/3)');
+        if(gridLooksGood(d)){
+          try{
+            const r=await review('grid',d);
+            if(r&&gridLooksGood(r)){
+              final=r;
+              break;
+            }
+          }catch(e){/* review failed, regenerate */}
+        }
+        if(attempt<2){
+          setLoading('🔄 الجدول مش دقيق، بجيب واحد تاني... ('+(attempt+2)+'/3)');
+          d=await ask(PROMPTS.grid(),undefined,'grid');
+        }
+      }
+      if(!final) final=d;
 
-      const cats=normalizeGrid(d);
+      const cats=normalizeGrid(final);
 
       cats.forEach(c=>S.used.grid.push(c.n));
 
