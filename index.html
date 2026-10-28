@@ -127,8 +127,9 @@ const expR=()=>{S.exp=true;render()},topExp=()=>{startT(60,topExp);render()};
 const tbox=()=>S.tl===null?'':`<div class="tm"><b class="tv">${S.tl}</b><div class="tbar"><s class="tf" style="width:${S.tl/S.max*100}%"></s></div></div>`;
 
 const gk=()=>{try{return localStorage.getItem('sk_gkey')||''}catch(e){return ''}};
-const gm=()=>{try{return localStorage.getItem('sk_gmodel')||'gemini-2.5-flash'}catch(e){return 'gemini-2.5-flash'}};
-function saveKey(){const k=document.getElementById('gk').value.trim(),m=document.getElementById('gmd').value.trim()||'gemini-2.5-flash';try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}const b=document.getElementById('gsv');if(b)b.textContent='✅ اتحفظ'}
+const DM='gemini-3.8-flash';
+const gm=()=>{try{const m=localStorage.getItem('sk_gmodel');return(!m||m==='gemini-2.5-flash')?DM:m}catch(e){return DM}};
+function saveKey(){const k=document.getElementById('gk').value.trim(),m=document.getElementById('gmd').value.trim()||DM;try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}const b=document.getElementById('gsv');if(b)b.textContent='✅ اتحفظ'}
 async function ask(p){
   const key=gk();
   if(!key)throw{message:'ضيف مفتاح Gemini الأول من الشاشة الرئيسية.'};
@@ -233,7 +234,7 @@ function render(){
   if(!S.mode){
     const m=(f,i,n,s,c1,c2,c3)=>`<button class="mc" style="--c1:${c1};--c2:${c2};--c3:${c3}" onclick="pick('${f}')"><i>${i}</i><b>${n}</b><small>${s}</small></button>`;
     $.innerHTML=`<div class="logo"><b>⚽</b><h1>صباحو كورة</h1><p>الأسئلة بتتولّد أونلاين من Gemini — اختار اللعبة</p></div>
-    <div class="card"><p class="mu" style="margin:0 0 8px">🔑 مفتاح Gemini (مجاني من aistudio.google.com/apikey) — بيتحفظ على جهازك بس</p><input id="gk" type="password" dir="ltr" placeholder="AIza..." value="${esc(gk())}"><input id="gmd" dir="ltr" value="${esc(gm())}" style="margin-top:8px"><button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button></div>
+    <div class="card"><p class="mu" style="margin:0 0 8px">🔑 مفتاح Gemini (مجاني من aistudio.google.com/apikey) — بيتحفظ على جهازك بس</p><input id="gk" type="password" dir="ltr" placeholder="AQ.Ab..." value="${esc(gk())}"><input id="gmd" dir="ltr" value="${esc(gm())}" style="margin-top:8px"><button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button></div>
     <div class="card"><div class="row"><input id="n0" value="${esc(S.t[0])}" maxlength="20"><input id="n1" value="${esc(S.t[1])}" maxlength="20"></div></div>
     ${hud(true)}
     <div class="menu">${m('top','🏆','توب ١٠','رقم ١ بنقطة … رقم ١٠ بـ ١٠ نقط • أول واحد لـ ١٠٠','#f5b50a','#d97706','#92400e')}${m('pw','🔑','باسورد','كلوز للفريق من غير الاسم • أول واحد لـ ٥','#22c55e','#15803d','#14532d')}${m('who','🕵️','مين أنا؟','٥ هينتات من الغامض للواضح • أول واحد لـ ٣','#a855f7','#6d28d9','#3b0764')}${m('grid','🧩','الجدول','٤ كاتيجوري • أسئلة بـ ١٠ و٢٠ و٣٠ و٤٠ • وفيه دبل!','#3b8cff','#1d4ed8','#172554')}</div>`;
