@@ -115,7 +115,7 @@ const $=document.getElementById('app');
 const GOAL={top:100,pw:5,who:3};
 const NAMES={top:'توب ١٠',pw:'باسورد',who:'مين أنا؟',grid:'الجدول'};
 const S={t:['الفريق الأحمر','الفريق الأزرق'],w:[0,0],sc:[0,0],mode:null,used:{top:[],pw:[],who:[],grid:[]},loading:false,err:'',q:null,queue:[],found:{},sel:null,show:false,hi:1,winner:null,tl:null,max:60,rev:false,exp:false,g:null};
-let sample=null,iv=null,ac;
+let iv=null,ac;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pts=r=>r,ptx=r=>r===1?'نقطة':r===2?'نقطتين':r+' نقط';
 function beep(f,d){try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;o.connect(g);g.connect(ac.destination);g.gain.value=.07;o.start();o.stop(ac.currentTime+d)}catch(e){}}
@@ -124,31 +124,46 @@ function paint(){document.querySelectorAll('.tv').forEach(e=>e.textContent=S.tl)
 function stopT(){clearInterval(iv);iv=null;S.tl=null}
 function startT(sec,cb){stopT();S.exp=false;S.max=S.tl=sec;iv=setInterval(()=>{S.tl--;paint();if(S.tl>0&&S.tl<=5)beep(700,.08);if(S.tl<=0){clearInterval(iv);iv=null;beep(200,.6);cb()}},1000);paint()}
 
-// تم إصلاح اللوب اللانهائي هنا
 const expR=()=>{S.exp=true;render()};
 const topExp=()=>{S.rev=true;render()};
 const tbox=()=>S.tl===null?'':`<div class="tm"><b class="tv">${S.tl}</b><div class="tbar"><s class="tf" style="width:${S.tl/S.max*100}%"></s></div></div>`;
 
 const gk=()=>{try{return localStorage.getItem('sk_gkey')||''}catch(e){return ''}};
-// تم التغيير إلى النموذج الأسرع والأكثر استقراراً
-const DM='gemini-2.0-flash';
-const gm=()=>{try{const m=localStorage.getItem('sk_gmodel');return(!m||m.includes('3.8')||m.includes('2.5'))?DM:m}catch(e){return DM}};
-function saveKey(){const k=document.getElementById('gk').value.trim(),m=document.getElementById('gmd').value.trim()||DM;try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}const b=document.getElementById('gsv');if(b)b.textContent='✅ اتحفظ'}
+
+// تم التحديث لاستخدام أحدث نموذج مع تنظيف تلقائي للاسم
+const DM='gemini-3.8-flash';
+const gm=()=>{
+  try{
+    let m=localStorage.getItem('sk_gmodel');
+    if(!m) return DM;
+    // تنظيف اسم الموديل: تحويل المسافات لشرطات وحروف صغيرة لمنع أخطاء الـ API
+    return m.toLowerCase().replace(/\s+/g, '-');
+  }catch(e){return DM}
+};
+
+function saveKey(){
+  const k=document.getElementById('gk').value.trim();
+  let m=document.getElementById('gmd').value.trim()||DM;
+  m = m.toLowerCase().replace(/\s+/g, '-'); // تنظيف فوري عند الحفظ
+  try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}
+  const b=document.getElementById('gsv');
+  if(b){b.textContent='✅ اتحفظ';setTimeout(()=>b.textContent='حفظ',2000)}
+}
 
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
 
 async function ask(p){
   const key=gk();
-  if(!key)throw{message:'ضيف مفتاح Gemini الأول من الشاشة الرئيسية.'};
+  if(!key)throw{message:'من فضلك أضف مفتاح Gemini أولاً من الشاشة الرئيسية.'};
   
-  // محاولة النموذج السريع أولاً، ثم البديل في حال الفشل
-  const modelsToTry = [gm(), 'gemini-1.5-flash'];
+  // سلسلة احتياطية ذكية: نبدأ بالأحدث، ونحتفظ بالبدائل في حال وجود قيود على المفتاح
+  const modelsToTry = ['gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-pro'];
   
   for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
     const model = modelsToTry[mIdx];
     for (let t = 0; t < 2; t++) {
       const ac = new AbortController();
-      const to = setTimeout(() => ac.abort(), 35000); // 35 ثانية كافية جداً لنماذج Flash
+      const to = setTimeout(() => ac.abort(), 30000); // 30 ثانية مهلة كافية
       let r;
       try {
         r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -159,8 +174,8 @@ async function ask(p){
             contents: [{ parts: [{ text: p }] }],
             generationConfig: {
               responseMimeType: 'application/json',
-              temperature: 0.4, // درجة حرارة منخفضة لسرعة أكبر ودقة أعلى في JSON
-              maxOutputTokens: 2048 // منع النموذج من الكلام الزائد وتسريع الرد
+              temperature: 0.3, // تقليل العشوائية لسرعة ودقة أعلى في توليد JSON
+              maxOutputTokens: 2048
             }
           })
         });
@@ -178,8 +193,9 @@ async function ask(p){
       if (!r.ok) {
         let m = '';
         try { m = (await r.json()).error.message; } catch (e) {}
-        if (mIdx < modelsToTry.length - 1) break; // تجربة النموذج البديل
-        throw { message: 'خطأ من Gemini: ' + (m || r.status) };
+        // إذا فشل النموذج الحالي، ينتقل تلقائياً للتالي في القائمة الاحتياطية
+        if (mIdx < modelsToTry.length - 1) break; 
+        throw { message: 'خطأ في المفتاح أو النموذج: ' + (m || r.status) };
       }
       
       const j = await r.json();
@@ -193,12 +209,12 @@ async function ask(p){
       }
     }
   }
-  throw { message: 'فشل في الحصول على السؤال. تأكد من المفتاح أو اتصال الإنترنت.' };
+  throw { message: 'فشل في الحصول على السؤال. تأكد من صحة مفتاح API أو اتصال الإنترنت.' };
 }
 
-const LG=['الدوري الإنجليزي','الدوري الإسباني','الدوري الإيطالي','الدوري الألماني','الدوري الفرنسي','دوري أبطال أوروبا','كأس العالم','كأس الأمم الأفريقية','الدوري المصري','كوبا أمريكا','اليورو','دوري أبطال أفريقيا','الدوري السعودي','الدوري الهولندي','الدوري البرتغالي','الدوري التركي','الدوري البرازيلي','الدوري الأرجنتيني'];
+const LG=['الدوري الإنجليزي','الدوري الإسباني','الدوري الإيطالي','الدوري الألماني','الدوري الفرنسي','دوري أبطال أوروبا','كأس العالم','كأس الأمم الأفريقية','الدوري المصري','كوبا أمريكا','اليورو','دوري أبطال أفريقيا','الدوري السعودي','الدوري الهولندي','الدوري البرتغالي','الدوري التركي'];
 const ER=['١٩٩٨ إلى ٢٠٠٤','٢٠٠٥ إلى ٢٠١٠','٢٠١١ إلى ٢٠١٦','٢٠١٧ إلى ٢٠٢٢','آخر ٣ سنين'];
-const POS=['حراس مرمى','مدافعين','لاعبين وسط','أجنحة','مهاجمين صريحين','لاعبين اتنقلوا كتير','لاعبين دوليين من أفريقيا','لاعبين من أمريكا الجنوبية'];
+const POS=['حراس مرمى','مدافعين','لاعبين وسط','أجنحة','مهاجمين صريحين','لاعبين انتقلوا بين أندية كثيرة'];
 const ANG=['أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم معين','أصغر الهدافين سناً في بطولة','أكتر لاعبين لعبوا في أندية مختلفة','أكتر لاعبين سجلوا هاتريك','أكتر لاعبين أخدوا كروت صفرا','أكتر حراس حافظوا على نظافة شباكهم','أكتر مدربين فازوا ببطولة','أكتر لاعبين خاضوا مباريات','أكتر لاعبين سجلوا من ضربات حرة','أكتر لاعبين سجلوا أهداف في النهائيات'];
 const GT=['كأس العالم','دوري أبطال أوروبا','الدوري الإنجليزي','الليجا','الكالتشو','البوندسليجا','الكرة المصرية','الكرة العربية والأفريقية','انتقالات اللاعبين','المدربين','أرقام قياسية','الجوائز الفردية','الملاعب وتاريخ الأندية','اليورو وكوبا أمريكا','حراس المرمى','أساطير من ١٩٩٨ لحد النهارده','مباريات ولحظات تاريخية','قوانين وأسرار كرة القدم'];
 
@@ -316,7 +332,7 @@ function render(){
   if(!S.mode){
     const m=(f,i,n,s,c1,c2,c3)=>`<button class="mc" style="--c1:${c1};--c2:${c2};--c3:${c3}" onclick="pick('${f}')"><i>${i}</i><b>${n}</b><small>${s}</small></button>`;
     $.innerHTML=`<div class="logo"><b>⚽</b><h1>صباحو كورة</h1><p>الأسئلة بتتولّد أونلاين من Gemini — اختار اللعبة</p></div>
-    <div class="card"><p class="mu" style="margin:0 0 8px">🔑 مفتاح Gemini (مجاني من aistudio.google.com/apikey) — بيتحفظ على جهازك بس</p><input id="gk" type="password" dir="ltr" placeholder="AQ.Ab..." value="${esc(gk())}"><input id="gmd" dir="ltr" value="${esc(gm())}" style="margin-top:8px"><button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button></div>
+    <div class="card"><p class="mu" style="margin:0 0 8px">🔑 مفتاح Gemini (مجاني من aistudio.google.com/apikey) — بيتحفظ على جهازك بس</p><input id="gk" type="password" dir="ltr" placeholder="AIzaSy..." value="${esc(gk())}"><input id="gmd" dir="ltr" value="${esc(gm())}" style="margin-top:8px" placeholder="gemini-3.8-flash"><button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button></div>
     <div class="card"><div class="row"><input id="n0" value="${esc(S.t[0])}" maxlength="20"><input id="n1" value="${esc(S.t[1])}" maxlength="20"></div></div>
     ${hud(true)}
     <div class="menu">${m('top','🏆','توب ١٠','رقم ١ بنقطة … رقم ١٠ بـ ١٠ نقط • أول واحد لـ ١٠٠','#f5b50a','#d97706','#92400e')}${m('pw','🔑','باسورد','كلوز للفريق من غير الاسم • أول واحد لـ ٥','#22c55e','#15803d','#14532d')}${m('who','🕵️','مين أنا؟','٥ هينتات من الغامض للواضح • أول واحد لـ ٣','#a855f7','#6d28d9','#3b0764')}${m('grid','🧩','الجدول','٤ كاتيجوري • أسئلة بـ ١٠ و٢٠ و٣٠ و٤٠ • وفيه دبل!','#3b8cff','#1d4ed8','#172554')}</div>`;
