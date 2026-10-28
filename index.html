@@ -130,16 +130,25 @@ const gk=()=>{try{return localStorage.getItem('sk_gkey')||''}catch(e){return ''}
 const DM='gemini-3.8-flash';
 const gm=()=>{try{const m=localStorage.getItem('sk_gmodel');return(!m||m==='gemini-2.5-flash')?DM:m}catch(e){return DM}};
 function saveKey(){const k=document.getElementById('gk').value.trim(),m=document.getElementById('gmd').value.trim()||DM;try{localStorage.setItem('sk_gkey',k);localStorage.setItem('sk_gmodel',m)}catch(e){}const b=document.getElementById('gsv');if(b)b.textContent='✅ اتحفظ'}
+let GCI=0;
+const sleep=ms=>new Promise(z=>setTimeout(z,ms));
 async function ask(p){
   const key=gk();
   if(!key)throw{message:'ضيف مفتاح Gemini الأول من الشاشة الرئيسية.'};
-  for(let t=0;t<3;t++){
-    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gm()}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json',temperature:1}})});
-    if(r.status===429||r.status===503){await new Promise(z=>setTimeout(z,3000*(t+1)));continue}
-    if(!r.ok){let m='';try{m=(await r.json()).error.message}catch(e){}throw{message:'Gemini: '+(m||r.status)}}
+  const cfgs=[{thinkingConfig:{thinkingLevel:'minimal'}},{thinkingConfig:{thinkingBudget:0}},{}];
+  for(let t=0;t<4;t++){
+    const ac=new AbortController(),to=setTimeout(()=>ac.abort(),60000);
+    let r;
+    try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${gm()}:generateContent`,{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json',temperature:1,...cfgs[GCI]}})})}
+    catch(e){clearTimeout(to);if(t<3)continue;throw{message:'Gemini اتأخر قوي. دوس جرّب تاني.'}}
+    clearTimeout(to);
+    if(r.status===429||r.status===503){await sleep(3000*(t+1));continue}
+    if(!r.ok){let m='';try{m=(await r.json()).error.message}catch(e){}
+      if(r.status===400&&/think/i.test(m)&&GCI<cfgs.length-1){GCI++;t--;continue}
+      throw{message:'Gemini: '+(m||r.status)}}
     const j=await r.json();
     const txt=(j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[]).map(x=>x.text||'').join('');
-    try{return JSON.parse(txt.replace(/```json|```/g,'').trim())}catch(e){throw{message:'الرد جه بصيغة غلط، جرّب تاني'}}
+    try{return JSON.parse(txt.replace(/```json|```/g,'').trim())}catch(e){if(t<3)continue;throw{message:'الرد جه بصيغة غلط، جرّب تاني'}}
   }
   throw{message:'وصلت للحد المجاني (طلبات كتير في الدقيقة). استنى شوية وجرّب تاني.'};
 }
@@ -174,7 +183,7 @@ const _tp=PROMPTS.top;PROMPTS.top=()=>_tp()+TOPFIX+(Math.random()<.85?' نوع �
 const PRE={};
 function prefetch(m){if(!m||PRE[m]||!gk())return;PRE[m]=ask(PROMPTS[m]()).catch(()=>null)}
 async function load(){
-  stopT();S.loading=true;S.err='';S.sel=null;S.rev=false;S.exp=false;render();
+  stopT();S.loading=true;S.err='';S.sel=null;S.rev=false;S.exp=false;render();const t0=Date.now();clearInterval(window.lt);window.lt=setInterval(()=>{const e=document.getElementById('le');if(e)e.textContent=Math.round((Date.now()-t0)/1000)+' ثانية'},1000);
   try{
     let d=PRE[S.mode];delete PRE[S.mode];d=d?await d:null;if(!d)d=await ask(PROMPTS[S.mode]());
     if(S.mode==='top'){
@@ -192,7 +201,7 @@ async function load(){
       S.g={cats,used:{},dbl:Math.floor(Math.random()*32),turn:0,cur:null,isD:false,ans:false};
     }
   }catch(e){S.err=(e&&e.message)||'حصلت مشكلة في تحميل السؤال'}
-  S.loading=false;render();if(!S.err)setTimeout(()=>prefetch(S.mode),200);
+  clearInterval(window.lt);S.loading=false;render();if(!S.err)setTimeout(()=>prefetch(S.mode),200);
 }
 function go(m){stopT();S.mode=m;S.sc=[0,0];S.q=null;S.queue=[];S.g=null;S.winner=null;load()}
 function home(){stopT();S.mode=null;S.winner=null;S.sel=null;render()}
@@ -242,7 +251,7 @@ function render(){
   }
   let body='',sheet='';
   const exb=S.exp?'<div class="ex">⏰ الوقت خلص!</div>':'';
-  if(S.loading)body=`<div class="card load"><span>⚽</span><p>بنجهّز الأسئلة...</p></div>`;
+  if(S.loading)body=`<div class="card load"><span>⚽</span><p>بنجهّز الأسئلة...</p><p class="mu" id="le"></p></div>`;
   else if(S.err)body=`<div class="card"><p class="err">⚠️ ${esc(S.err)}</p><button class="w" onclick="load()">جرّب تاني</button></div>`;
   else if(S.winner!==null)body=`<div class="card win"><div style="font-size:64px">${S.winner===2?'🤝':'🏆'}</div><h2>${S.winner===2?'تعادل!':esc(S.t[S.winner])+' كسب كاتيجوري '+NAMES[S.mode]+'!'}</h2><button class="w" onclick="home()">رجوع للقايمة</button></div>`;
   else if(S.mode==='top'&&S.q){
