@@ -106,6 +106,10 @@ button.sec{border:1px solid #2f4d7c}
 .cf{position:fixed;top:-14px;width:9px;height:14px;z-index:30;pointer-events:none;animation:fall linear forwards}
 @keyframes fall{to{transform:translateY(110vh) rotate(720deg)}}
 .ord{background:#0a1628;border:2px solid var(--gold);color:var(--gold);border-radius:12px;text-align:center;font-weight:900;padding:6px 10px;margin:6px 0}
+.mlist{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.mchip{font-size:12px;padding:6px 10px;border-radius:99px;background:#0a1628;border:2px solid var(--bd);color:var(--mu);font-weight:800;box-shadow:none;cursor:pointer}
+.mchip:active{transform:none;box-shadow:none}
+.mchip.on{border-color:var(--g);color:var(--g);background:#0f2a1e}
 </style>
 </head>
 <body>
@@ -129,594 +133,263 @@ const topExp=()=>{stopT();S.rev=true;S.sel=null;render()};
 const tbox=()=>S.tl===null?'':`<div class="tm"><b class="tv">${S.tl}</b><div class="tbar"><s class="tf" style="width:${S.tl/S.max*100}%"></s></div></div>`;
 
 const LS=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}return null};
-const DEF={groq:'llama-3.3-70b-versatile',gemini:'gemini-2.0-flash'};
 const gp=()=>LS('sk_prov')||'groq';
-const gk=()=>LS('sk_key_'+gp())||(gp()==='gemini'?LS('sk_gkey'):'')||'';
-const gm=()=>LS('sk_model_'+gp())||DEF[gp()];
+const gk=()=>LS('sk_key_'+gp())||'';
+const gm=()=>LS('sk_model_'+gp())||'';
+const gModels=()=>{try{return JSON.parse(LS('sk_models_'+gp())||'[]')}catch(e){return []}};
+
+// ====== جلب النماذج المتاحة فعلياً للمفتاح ======
+async function fetchAvailable(){
+  const prov=gp(),key=gk();
+  if(!key) throw {message:'ضيف المفتاح الأول'};
+  if(prov==='groq'){
+    const r=await fetch('https://api.groq.com/openai/v1/models',{headers:{'Authorization':'Bearer '+key}});
+    const j=await r.json();
+    if(!r.ok) throw {message:(j.error&&j.error.message)||r.status};
+    return (j.data||[]).map(m=>m.id).filter(id=>/llama|qwen|gpt-oss|kimi|grok|magistral|deepseek|mistral-large/i.test(id) && !/whisper|guard|tts|playai|embed|compound|orion|prompt|custom|vercel|tool-use|safety|moderation/i.test(id));
+  }else{
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{headers:{'x-goog-api-key':key}});
+    const j=await r.json();
+    if(!r.ok) throw {message:(j.error&&j.error.message)||r.status};
+    return (j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>m.name.replace('models/','')).filter(n=>/flash|pro|lite/i.test(n));
+  }
+}
+
+// ترتيب النماذج: الأفضل للعربية والـ JSON أولاً
+function rankModels(list,prov){
+  const score=id=>{
+    let s=0;
+    const l=id.toLowerCase();
+    if(prov==='groq'){
+      if(/qwen.*3.*32b|qwen3-32b/.test(l)) s+=100;      // الأفضل عربياً
+      if(/llama-3\.3-70b/.test(l)) s+=90;
+      if(/llama-4-maverick/.test(l)) s+=85;
+      if(/gpt-oss-120b/.test(l)) s+=80;
+      if(/kimi-k2/.test(l)) s+=75;
+      if(/llama-4-scout/.test(l)) s+=70;
+      if(/gpt-oss-20b/.test(l)) s+=65;
+      if(/magistral/.test(l)) s+=60;
+      if(/deepseek/.test(l)) s+=55;
+      if(/llama-3\.1-70b/.test(l)) s+=50;
+      if(/llama-3\.1-8b/.test(l)) s+=30;                 // سريع لكن أضعف
+      if(/-preview|-next|-exp/.test(l)) s-=20;
+    }else{
+      if(/gemini-3.*flash/.test(l)) s+=100;
+      if(/gemini-2.*flash/.test(l)) s+=90;
+      if(/gemini-1.*flash/.test(l)) s+=70;
+      if(/gemini.*pro/.test(l)) s+=50;
+      if(/-exp|-preview/.test(l)) s-=20;
+    }
+    return s;
+  };
+  return [...new Set(list)].sort((a,b)=>score(b)-score(a));
+}
+
+async function refreshModels(silent){
+  const o=document.getElementById('gst');
+  if(!silent&&o) o.textContent='⏳ بجيب الموديلات المتاحة لمفتاحك...';
+  try{
+    const list=rankModels(await fetchAvailable(),gp());
+    LS('sk_models_'+gp(),JSON.stringify(list));
+    if(!gm()||!list.includes(gm())){
+      LS('sk_model_'+gp(),list[0]||'');
+    }
+    if(o) o.textContent=list.length?('✅ لقينا '+list.length+' موديل شغال — المختار: '+list[0]):'⚠️ مفيش موديلات متاحة للمفتاح ده';
+    if(!silent) render();
+    return list;
+  }catch(e){
+    if(o) o.textContent='❌ '+(e.message||e);
+    return [];
+  }
+}
 
 function saveKey(){
   const p=document.getElementById('gp').value;
   const k=document.getElementById('gk').value.trim();
-  let m=document.getElementById('gm').value.trim()||DEF[p];
-
-  m=m.toLowerCase().replace(/\s+/g,'-').trim();
-
-  if(p==='groq'){
-    const bad=/llama-3\.1-8b-instant|llama-3-1-8b-instant|meta-llama\/llama-4-scout|llama-4-scout/i;
-    if(!m || bad.test(m)) m=DEF.groq;
-  }
-
-  LS('sk_prov',p);
-  LS('sk_key_'+p,k);
-  LS('sk_model_'+p,m);
-
-  const gmEl=document.getElementById('gm');
-  if(gmEl) gmEl.value=m;
-
+  LS('sk_prov',p);LS('sk_key_'+p,k);
   const b=document.getElementById('gsv');
-  if(b){
-    b.textContent='✅ اتحفظ';
-    setTimeout(()=>{b.textContent='حفظ'},1500);
-  }
+  if(b){b.textContent='✅ اتحفظ';setTimeout(()=>{b.textContent='حفظ'},1500)}
+  refreshModels();
 }
-
 function setProv(p){
-  document.getElementById('gk').value=LS('sk_key_'+p)||(p==='gemini'?LS('sk_gkey'):'')||'';
-  document.getElementById('gm').value=LS('sk_model_'+p)||DEF[p];
+  LS('sk_prov',p);
+  document.getElementById('gk').value=LS('sk_key_'+p)||'';
   document.getElementById('gk').placeholder=p==='groq'?'gsk_...':'AIza...';
+  document.getElementById('gm').value=LS('sk_model_'+p)||'';
+  render();
 }
+function chooseModel(m){LS('sk_model_'+gp(),m);render()}
 
-let GCI=0;
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
-const CFGS=[{thinkingConfig:{thinkingLevel:'low'}},{thinkingConfig:{thinkingLevel:'LOW'}},{thinkingConfig:{thinkingBudget:0}},{}];
+const CFGS=[{thinkingConfig:{thinkingLevel:'low'}},{thinkingConfig:{thinkingBudget:0}},{}];
 
 async function once(prov,model,p,big,sig,key,attempt=0){
   let r;
-
   if(prov==='groq'){
-    const baseSys='You are a football quiz generator. Output ONE valid JSON object only. No markdown. No comments. No trailing commas. Keep Arabic strings short and escape quotes correctly.';
-
-    const retryNote =
-      attempt===0 ? '' :
-      attempt===1 ? '\nRetry 1: Previous output was invalid JSON. Return only raw JSON. Simplify strings if needed.' :
-      '\nRetry 2: Return a minimal valid JSON object matching the requested keys exactly. No extra text.';
-
-    const useJsonMode = attempt === 0;
-
-    const maxTok = big
-      ? (attempt===0 ? 8000 : attempt===1 ? 7000 : 6000)
-      : (attempt===0 ? 3000 : 2500);
-
-    const payload = {
+    const baseSys='You are a football quiz generator. Output ONE valid JSON object only. No markdown fences. No comments. No trailing commas. Escape all quotes inside Arabic strings. Keep every string under 120 chars.';
+    const retryNote=attempt===0?'':attempt===1?'\nPrevious output was invalid JSON. Return ONLY raw JSON, simpler structure.':'\nReturn a minimal valid JSON object with exactly the requested keys. No extra text at all.';
+    const maxTok=big?(attempt===0?8000:7000):(attempt===0?3000:2500);
+    const payload={
       model,
-      messages: [
-        { role: 'system', content: baseSys + retryNote },
-        { role: 'user', content: p }
-      ],
-      temperature: attempt===0 ? 0.1 : 0,
-      max_completion_tokens: maxTok
+      messages:[{role:'system',content:baseSys+retryNote},{role:'user',content:p}],
+      temperature:attempt===0?0.2:0,
+      max_completion_tokens:maxTok
     };
-
-    if(useJsonMode){
-      payload.response_format = { type: 'json_object' };
-    }
-
-    r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      signal: sig,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify(payload)
-    });
-
-  } else {
-    const maxTok = big
-      ? (attempt===0 ? 8000 : 6000)
-      : 3000;
-
-    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      signal: sig,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': key
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: p }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: attempt===0 ? 0.2 : 0,
-          maxOutputTokens: maxTok,
-          ...CFGS[GCI]
-        }
-      })
-    });
+    // json_object mode فقط في المحاولة الأولى — بعض الموديلات مش بتدعمه
+    if(attempt===0) payload.response_format={type:'json_object'};
+    r=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',signal:sig,headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify(payload)});
+  }else{
+    const maxTok=big?(attempt===0?8000:6000):3000;
+    r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',signal:sig,headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:p}]}],generationConfig:{responseMimeType:'application/json',temperature:attempt===0?0.3:0,maxOutputTokens:maxTok,...CFGS[Math.min(GCI,CFGS.length-1)]}})});
   }
-
   if(!r.ok){
-    let m='';
-    try{
-      const j=await r.json();
-      m=(j.error && j.error.message) || JSON.stringify(j.error || j).slice(0,300);
-    }catch(e){}
-    throw {
-      message: (prov==='groq' ? 'Groq: ' : 'Gemini: ') + (m || r.status),
-      status: r.status,
-      jsonError: false
-    };
+    let m='';try{const j=await r.json();m=(j.error&&j.error.message)||JSON.stringify(j).slice(0,300)}catch(e){}
+    throw {message:(prov==='groq'?'Groq: ':'Gemini: ')+(m||r.status),status:r.status};
   }
-
-  const j = await r.json();
-
-  const txt = prov==='groq'
-    ? ((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '')
-    : ((j.candidates && j.candidates[0] && j.candidates[0].content ? j.candidates[0].content.parts : [])
-        .filter(x => !x.thought)
-        .map(x => x.text || '')
-        .join(''));
-
-  let clean = txt
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
-    .replace(/```json|```/g, '')
-    .trim();
-
-  let out = null;
-
-  try {
-    out = JSON.parse(clean);
-  } catch(err) {
-    const a = clean.indexOf('{');
-    const b = clean.lastIndexOf('}');
-    if(a > -1 && b > a){
-      try {
-        out = JSON.parse(clean.slice(a, b + 1));
-      } catch(err2) {}
-    }
+  const j=await r.json();
+  const txt=prov==='groq'
+    ?((j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||'')
+    :((j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[]).filter(x=>!x.thought).map(x=>x.text||'').join(''));
+  let clean=txt.replace(/<think>[\s\S]*?<\/think>/g,'').replace(/```json|```/g,'').trim();
+  let out=null;
+  try{out=JSON.parse(clean)}catch(e){
+    const a=clean.indexOf('{'),b=clean.lastIndexOf('}');
+    if(a>-1&&b>a){try{out=JSON.parse(clean.slice(a,b+1))}catch(e2){}}
   }
-
-  if(!out){
-    throw {
-      message: (prov==='groq' ? 'Groq: ' : 'Gemini: ') + 'JSON طلع غير صالح' + (attempt ? ' بعد محاولة ' + attempt : ''),
-      status: 0,
-      jsonError: true
-    };
-  }
-
+  if(!out) throw {message:(prov==='groq'?'Groq: ':'Gemini: ')+'JSON طلع غير صالح',status:0,jsonError:true};
   return out;
 }
 
+let GCI=0;
 async function ask(p,tmo){
-  const prov = gp();
-  const key = gk();
-  const big = p.includes('"cats"');
+  const prov=gp(),key=gk(),big=p.includes('"cats"');
+  if(!key) throw {message:'ضيف مفتاح الـ API الأول من الشاشة الرئيسية.'};
+  if(tmo==null) tmo=big?60000:35000;
 
-  if(!key){
-    throw { message: 'ضيف مفتاح الـ API الأول من الشاشة الرئيسية.' };
-  }
+  // قائمة النماذج: المختار أولاً، ثم كل المتاح المرتب
+  const avail=gModels();
+  const chosen=gm();
+  const models=[...new Set([chosen,...avail].filter(Boolean))];
+  if(!models.length){await refreshModels(true);models.push(...gModels())}
+  if(!models.length) throw {message:'مفيش موديلات متاحة للمفتاح ده. دوس "تحديث الموديلات" أو غيّر المفتاح.'};
 
-  if(tmo == null){
-    tmo = big ? 50000 : 30000;
-  }
-
-  const chosen = (gm() || '').trim();
-
-  const models = prov==='groq'
-    ? [...new Set([chosen, DEF.groq].filter(Boolean))]
-    : [...new Set([chosen, DEF.gemini].filter(Boolean))];
-
-  let last = null;
-
+  let last=null;
   for(const m of models){
-    for(let t=0; t<3; t++){
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), tmo);
-
-      try {
-        const d = await once(prov, m, p, big, ctrl.signal, key, t);
+    for(let t=0;t<3;t++){
+      const ctrl=new AbortController(),to=setTimeout(()=>ctrl.abort(),tmo);
+      try{
+        const d=await once(prov,m,p,big,ctrl.signal,key,t);
         clearTimeout(to);
+        if(m!==chosen) LS('sk_model_'+gp(),m); // احفظ الموديل اللي اشتغل فعلاً
         return d;
-      } catch(err) {
-        clearTimeout(to);
-        last = err;
-
-        const msg = String(err && err.message || '');
-        const isAbort = err && err.name === 'AbortError';
-
-        if((err && err.status === 401) || (err && err.status === 403)){
-          throw { message: 'المفتاح غلط أو مش شغال. اتأكد منه وانسخه من جديد.' };
-        }
-
-        if(err && (err.status === 429 || err.status === 503)){
-          await sleep(2000 * (t + 1));
-          continue;
-        }
-
-        if((err && err.status === 404) || /does not exist|not have access|unknown model|not found|unsupported model/i.test(msg)){
-          break;
-        }
-
-        if((err && err.jsonError) || /failed to validate json|invalid json|json/i.test(msg)){
-          if(t < 2) continue;
-          break;
-        }
-
-        if(isAbort || /abort|timeout|اتأخر/i.test(msg)){
-          if(t < 2) continue;
-          break;
-        }
-
-        if(t < 1) continue;
-        break;
+      }catch(err){
+        clearTimeout(to);last=err;
+        const msg=String(err&&err.message||'');
+        if(err&&err.name==='AbortError'){if(t<2)continue;break}
+        if(err&&(err.status===401||err.status===403)) throw {message:'المفتاح غلط أو مش شغال.'};
+        if(err&&(err.status===429||err.status===503)){await sleep(2500*(t+1));continue}
+        if(err&&err.status===400&&/response_format|json_object/i.test(msg)){if(t<2)continue;break} // جرب بدون json mode
+        if(err&&(err.status===404||/does not exist|not have access|not found|unsupported/i.test(msg))) break; // موديل مش متاح → التالي
+        if(err&&err.jsonError){if(t<2)continue;break}
+        if(t<1)continue;break;
       }
     }
   }
-
-  throw { message: (last && last.message) || 'فشل الاتصال. جرّب تاني.' };
+  throw {message:(last&&last.message)||'فشل الاتصال. جرّب تاني.'};
 }
 
 async function testConn(){
-  const o=document.getElementById('gst');
-  saveKey();
-  o.textContent='⏳ بنجرّب...';
-  const t0=Date.now();
-  try{
-    await ask('رجّع JSON بس: {"ok":true}',20000);
-    o.textContent='✅ شغال — '+gm()+' رد في '+((Date.now()-t0)/1000).toFixed(1)+' ثانية';
-  }catch(e){
-    o.textContent='❌ '+(e.message||e);
-  }
+  const o=document.getElementById('gst');saveKey();o.textContent='⏳ بنجرّب...';const t0=Date.now();
+  try{await ask('رجّع JSON بس: {"ok":true}',20000);o.textContent='✅ شغال — '+gm()+' رد في '+((Date.now()-t0)/1000).toFixed(1)+' ثانية'}
+  catch(e){o.textContent='❌ '+(e.message||e)}
 }
 
-async function listModels(){
-  const o=document.getElementById('gst');
-  saveKey();
-  o.textContent='⏳ بنجيب الموديلات...';
-  try{
-    const g=gp()==='groq';
-    const r=await fetch(g?'https://api.groq.com/openai/v1/models':'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{
-      headers:g?{'Authorization':'Bearer '+gk()}:{'x-goog-api-key':gk()}
-    });
-    const j=await r.json();
-    if(!r.ok) throw { message:(j.error && j.error.message) || r.status };
-    const l=g
-      ? (j.data||[]).map(m=>m.id).filter(x=>!/whisper|guard|tts|playai|embed|orpheus/i.test(x))
-      : (j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')&&/flash/i.test(m.name)).map(m=>m.name.replace('models/',''));
-    o.textContent='الموديلات المتاحة:\n'+(l.slice(0,20).join('\n')||'مفيش')+(l.length>20?'\n...وغيرها':'');
-  }catch(e){
-    o.textContent='❌ '+(e.message||e);
-  }
-}
-
-try{
-  const u=JSON.parse(localStorage.getItem('sk_used')||'null');
-  if(u) for(const k in S.used) if(Array.isArray(u[k])) S.used[k]=u[k].slice(-300);
-}catch(e){}
-
-function saveUsed(){
-  try{localStorage.setItem('sk_used',JSON.stringify(S.used))}catch(e){}
-}
+try{const u=JSON.parse(localStorage.getItem('sk_used')||'null');if(u)for(const k in S.used)if(Array.isArray(u[k]))S.used[k]=u[k].slice(-300)}catch(e){}
+function saveUsed(){try{localStorage.setItem('sk_used',JSON.stringify(S.used))}catch(e){}}
 
 const pk=(a,n=1)=>[...a].sort(()=>Math.random()-.5).slice(0,n);
 const usedL=(k,n)=>S.used[k].slice(-n).join(' | ')||'لسه مفيش';
 
-const LG=['الدوري الإنجليزي','الدوري الإسباني','الدوري الإيطالي','الدوري الألماني','الدوري الفرنسي','دوري أبطال أوروبا','كأس العالم','كأس الأمم الأفريقية','الدوري المصري','كوبا أمريكا','اليورو','دوري أبطال أفريقيا','الدوري السعودي','الدوري الهولندي','الدوري البرتغالي','الدوري التركي','الدوري البرازيلي','الدوري الأرجنتيني','الدوري الأسكتلندي','الدوري البلجيكي','الدوري الأمريكي'];
+const LG=['الدوري الإنجليزي','الدوري الإسباني','الدوري الإيطالي','الدوري الألماني','الدوري الفرنسي','دوري أبطال أوروبا','كأس العالم','كأس الأمم الأفريقية','الدوري المصري','كوبا أمريكا','اليورو','دوري أبطال أفريقيا','الدوري السعودي','الدوري الهولندي','الدوري البرتغالي','الدوري التركي','الدوري البرازيلي','الدوري الأرجنتيني'];
+const ER=['١٩٩٨ إلى ٢٠٠٤','٢٠٠٥ إلى ٢٠١٠','٢٠١ إلى ٢١٦','٠١٧ إلى ٢٠٢٢','آخر ٣ سنين','١٩٩٨ لحد النهارده'];
+const POS=['حراس مرمى','مدافعين','لاعبين وسط','أجنحة','مهاجمين صريحين','لاعبين اتنقلوا كتير','لاعبين من أفريقيا','لاعبين من أمريكا الجنوبية','لاعبين من شرق أوروبا'];
+const ANG=['أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم معين','أصغر الهدافين سناً في بطولة','أكتر لاعبين لعبوا في أندية مختلفة','أكتر لاعبين سجلوا هاتريك','أكتر لاعبين أخدوا كروت صفرا في موسم','أكتر حراس حافظوا على نظافة شباكهم','أكتر مدربين فازوا ببطولة في فترة','أكتر لاعبين سجلوا من ضربات حرة','أكتر لاعبين سجلوا أهداف في النهائيات','أكتر اللاعبين تسجيلاً كبدلاء','أكتر لاعبين سجلوا بالرأس','أكتر لاعبين سجلوا ضد فريق معين في عقد'];
+const GT=['كأس العالم','دوري أبطال أوروبا','الدوري الإنجليزي','الليجا','الكالتشو','البوندسليجا','الكرة المصرية','الكرة العربية والأفريقية','انتقالات اللاعبين','المدربين','أرقام قياسية','الجوائز الفردية','مباريات ولحظات تاريخية','حراس المرمى','أساطير من ١٩٩٨ لحد النهارده','الدوري الفرنسي والهولندي والبرتغالي'];
+const ERT=['أول الألفينات','نص الألفينات','٢٠١٠ إلى ٢٠١٥','٢٠٦ إلى ٢٠٢٠','آخر ٥ سنين','كل العصور من ١٩٩٨'];
 
-const ER=['١٩٩٨ إلى ٢٠٠٤','٢٠٠٥ إلى ٢٠١٠','٢٠١١ إلى ٢٠١٦','٢٠١٧ إلى ٢٠٢٢','آخر ٣ سنين','١٩٩ لحد النهارده'];
-
-const POS=['حراس مرمى','مدافعين','لاعبين وسط','أجنحة','مهاجمين صريحين','لاعبين اتنقلوا كتير','لاعبين دوليين من أفريقيا','لاعبين من أمريكا الجنوبية','لاعبين من شرق أوروبا','لاعبين من أسكندنافيا'];
-
-const ANG=[
-'أكتر لاعبين ساهموا في أهداف (أهداف + أسيستات) في موسم أو دوري معين',
-'أصغر الهدافين سناً في بطولة',
-'أكتر لاعبين لعبوا في أندية مختلفة',
-'أكتر لاعبين سجلوا هاتريك',
-'أكتر لاعبين أخدوا كروت صفرا',
-'أكتر حراس حافظوا على نظافة شباكهم',
-'أكتر مدربين فازوا ببطولة',
-'أكتر لاعبين خاضوا مباريات',
-'أكتر لاعبين سجلوا من ضربات حرة',
-'أكتر لاعبين سجلوا أهداف في النهائيات',
-'أكتر اللاعبين تسجيلاً كبدلاء',
-'أكتر لاعبين صنعوا أهداف (أسيستات) في موسم',
-'أكتر لاعبين سجلوا بالرأس',
-'أكتر لاعبين شاركوا في كئوس عالم',
-'أكتر لاعبين سجلوا ضد فريق معين'
-];
-
-const GT=[
-'كأس العالم',
-'دوري أبطال أوروبا',
-'الدوري الإنجليزي',
-'الليجا',
-'الكالتشو',
-'البوندسليجا',
-'الكرة المصرية',
-'الكرة العربية والأفريقية',
-'انتقالات اللاعبين',
-'المدربين',
-'أرقام قياسية',
-'الجوائز الفردية',
-'الملاعب وتاريخ الأندية',
-'اليورو وكوبا أمريكا',
-'حراس المرمى',
-'أساطير ونجوم من ١٩٩٨ لحد النهارده',
-'مباريات ولحظات تاريخية',
-'قوانين وأسرار كرة القدم',
-'الأندية الأوروبية الصغيرة',
-'الدوري الفرنسي والهولندي والبرتغالي'
-];
-
-const ERT=['الستينات والسبعينات','الثمانينات','التسعينات','أول الألفينات','نص الألفينات','٢٠١٠ إلى ٢٠١٥','آخر ٥ سنين','كل العصور'];
-
-const ERA98=' شرط أساسي: كل الأسئلة والأسماء والإحصائيات والأحداث لازم تكون من موسم ١٩٩٨ لحد النهارده بس، وممنوع أي حاجة قبل ١٩٩ (مفيش لاعبين أو مدربين أو أحداث أو أرقام قبل كده، ولاعب بدأ قبل ١٩٩٨ يتحسب بس بإنجازاته من ١٩٩٨ وبعد). لو الفكرة محتاجة بيانات قديمة غيّرها.';
-
-const TOPFIX=' مهم جداً: الترتيب لازم يكون واضح ومنطقي. حط في الحقل o جملة قصيرة بتقول الترتيب ماشي إزاي. لو السؤال عن أرقام، رتّب من الأكبر للأصغر (r=1 هو الأكتر). لو السؤال عن سنين أو مواسم أو فايزين بالبطولة، رتّب من الأحدث للأقدم (r=1 هو الأحدث). اختار زاوية أرقامها مختلفة من غير تعادل، وحط الرقم أو السنة في s عشان الترتيب يبان. الشكل النهائي: {"q":"..","o":"..","items":[..]}.';
+const ERA98=' شرط أساسي: كل الأسئلة والأسماء والإحصائيات من موسم ١٩٩٨ لحد النهارده بس، وممنوع أي حاجة قبل ١٩٩٨.';
+const TOPFIX=' مهم: الترتيب لازم يكون واضح. حط في الحقل o جملة قصيرة تشرح الترتيب. لو أرقام رتّب من الأكبر للأصغر (r=1 الأكتر). لو زمني رتّب من الأحدث للأقدم. حط الرقم أو السنة في s.';
 
 const PROMPTS={
-  top:()=>{
-    return `إنت مقدم مسابقات كرة قدم كريتيف. اعمل سؤال "توب ١٠" صعب شوية ومبتكر، مش سؤال عادي. الفكرة المطلوبة: ${pk(ANG)[0]}. المجال: ${pk(LG)[0]}. الفترة: ${pk(ERT)[0]}. عدّل الفكرة والمجال لو مش متأكد من الأرقام — المهم الأرقام والترتيب تكون صح ١٠٪. عنوان السؤال لازم يحدد البطولة والموسم أو الفترة بوضوح. مختلف عن: ${usedL('top',10)}. مطلوب ١٠ أسماء مختلفة بدون تكرار. رجّع JSON بس: {"q":"عنوان السؤال بالعربي","o":"شرح الترتيب","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو المعلومة","y":"الموسم أو السنة"}]} وفيه ١٠ عناصر مرتبة من r=1 لـ r=10، r=1 هو الأسهل والأشهر والأعلى في الأرقام، وr=10 هو الأصعب والأقل ظهوراً.`
-    + TOPFIX
-    + (Math.random()<.85
-      ? ' نوع الترتيب المطلوب المرة دي: بالعدد أو الأرقام من الأكتر للأقل (مش زمني). ممنوع الترتيب بالأحدث للأقدم المرة دي.'
-      : ' نوع الترتيب المطلوب المرة دي: زمني من الأحدث للأقدم.');
-  },
-
-  pw:()=>`هات ١٤ لاعب كرة قدم (قدامى وحاليين) بأسمائهم بالعربي، بشرط يكونوا معروفين لمتابعي الكورة المتعمقين بس مش من أشهر ٨٠ لاعب في التاريخ. ممنوع الأسماء الكبيرة (ميسي، رونالدو، نيمار، صلاح، مبابي، زيدان، مارادونا، بيليه، هالاند، دي بروين، مودريتش، بنزيما، روني، بيكهام، إنييستا، تشافي، هنري، رونالدينيو وأمثالهم). نوّع: ${pk(POS,2).join(' و')}، ومن ${pk(LG,3).join(' و')}، ومن فترة ${pk(ER)[0]}. ممنوع التكرار وممنوع الأسماء دي: ${S.used.pw.slice(-80).join('، ')||'لسه مفيش'}. رجّع JSON بس: {"p":["الاسم",...]}`+ERA98,
-
-  who:()=>`اختار لاعب كرة قدم معروف لعشاق الكورة بس مش من أشهر ٣٠ اسم في العالم، يفضّل يكون مرتبط بـ ${pk(LG)[0]} ومن فترة ${pk(ER)[0]}، ومش من دول: ${S.used.who.slice(-40).join('، ')||'لسه مفيش'}. اعمل "مين أنا؟" صعبة بـ ٥ هينتات بالعربي المصري من غير ذكر الاسم نهائياً. التدرج: ١) تفصيلة غريبة وبعيدة جداً مش بتدل على اللاعب. ٢) معلومة عن بداياته أو أول نادي. ٣) معلومة عن مركز أو أرقام أو بطولة، بتنطبق على عشرات اللاعبين. ٤) معلومة بتضيّق الاختيارات لكن لسه بتنطبق على أكتر من ٥ لاعبين ومتدلش على اللاعب بسهولة. ٥) هينت محتاج تفكير: بيضيّق الاختيارات لـ ٢ أو ٣ لاعبين بالكتير، ومتحطش فيه لقب شهير ولا لحظة أيقونية ولا نادي وسنة مع بعض ولا أي حاجة بتكشف الاسم بسرعة. رجّع JSON بس: {"n":"اسم اللاعب","h":["١","٢","٣","٤","٥"]}`+ERA98,
-
-  grid:()=>`إنت مقدم مسابقات كرة قدم محترف. اعمل لعبة "الجدول" بـ ٤ كاتيجوري دي بالظبط: ${pk(GT,4).join(' | ')}. ومختلفة عن اللي فات: ${usedL('grid',8)}. كل كاتيجوري فيها ٨ أسئلة: سؤالين p=10 (سهلة: أي متابع كورة بيعرفها)، سؤالين p=20 (متوسطة)، سؤالين p=30 (صعبة جداً: محتاجة متابع خبير بيحفظ التفاصيل: أرقام دقيقة أو سنين أو أسماء مش مشهورة أو مباريات محددة)، سؤالين p=40 (أصعب الأصعب: معلومات نادرة جداً حتى المتابع المحترف هيتردد فيها: إحصائية دقيقة أو حدث غامض أو لاعب مجهول نسبياً أو تفصيلة صغيرة في مباراة بعينها، وإجابتها مؤكدة ومحددة). الصعوبة تتدرج بوضوح من السهل للصعب، وممنوع تبقى أسئلة ١٠ صعبة. كل سؤال بالعربي المصري، إجابته قصيرة جداً (كلمة أو كلمتين بالكتير) وواضحة ومؤكدة ١٠٠٪ ومالهاش أكتر من إجابة صح. لو مش متأكد من معلومة غيّر السؤال. رجّع JSON بس: {"cats":[{"n":"اسم الكاتيجوري","qs":[{"p":10,"q":"السؤال","a":"الإجابة"}]}]}`+ERA98
+top:()=>`إنت مقدم مسابقات كرة قدم كريتيف. اعمل سؤال "توب ١٠" صعب ومبتكر. الفكرة: ${pk(ANG)[0]}. المجال: ${pk(LG)[0]}. الفترة: ${pk(ERT)[0]}. لو مش متأكد من الأرقام غيّر الزاوية — المهم الترتيب صح ١٠٠٪. عنوان السؤال يحدد البطولة والموسم بوضوح. مختلف عن: ${usedL('top',10)}. ١٠ أسماء مختلفة بدون تكرار. رجّع JSON بس: {"q":"عنوان السؤال","o":"شرح الترتيب","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو المعلومة"}]}`+TOPFIX+(Math.random()<.85?' المرة دي: ترتيب بالعدد من الأكتر للأقل.':' المرة دي: ترتيب زمني من الأحدث للأقدم.'),
+pw:()=>`هات ١٤ لاعب كرة قدم بأسمائهم بالعربي، معروفين لمتابعي الكورة المتعمقين بس مش من أشهر ٨٠ لاعب. ممنوع: ميسي، رونالدو، نيمار، صلاح، مبابي، زيدان، مارادونا، بيليه، هالاند، دي بروين، مودريتش، بنزيما، روني، بيكهام، إنييستا، تشافي، هنري، رونالدينيو. نوّع: ${pk(POS,2).join(' و')}، من ${pk(LG,3).join(' و')}، فترة ${pk(ER)[0]}. ممنوع التكرار وممنوع: ${S.used.pw.slice(-80).join('، ')||'لسه مفيش'}. رجّع JSON بس: {"p":["الاسم",...]}`+ERA98,
+who:()=>`اختار لاعب معروف لعشاق الكورة بس مش من أشهر ٣٠ اسم، مرتبط بـ ${pk(LG)[0]} وفترة ${pk(ER)[0]}، مش من: ${S.used.who.slice(-40).join('، ')||'لسه مفيش'}. اعمل "مين أنا؟" بـ ٥ هينتات بالعربي المصري بدون ذكر الاسم. التدرج: ١) تفصيلة غريبة بعيدة. ٢) بداية مشواره أو أول نادي. ٣) معلومة بتنطبق على عشرات اللاعبين. ٤) معلومة تضيّق الاختيارات لكن لسه على أكتر من ٥ لاعبين. ٥) هينت يضيّق لـ ٢-٣ لاعبين بدون لقب شهير أو لحظة أيقونية أو نادي+سنة. رجّع JSON بس: {"n":"اسم اللاعب","h":["١","٢","٣","٤","٥"]}`+ERA98,
+grid:()=>`إنت مقدم مسابقات كرة قدم. اعمل "الجدول" بـ ٤ كاتيجوري: ${pk(GT,4).join(' | ')}. مختلفة عن: ${usedL('grid',8)}. كل كاتيجوري ٨ أسئلة: ٢ بـ ١٠ (سهلة)، ٢ بـ ٢٠ (متوسطة)، ٢ بـ ٣٠ (صعبة: أرقام دقيقة/سنين/مباريات محددة)، ٢ بـ ٤٠ (نادرة جداً: إحصائية دقيقة أو تفصيلة صغيرة في مباراة بعينها). الصعوبة تتدرج بوضوح. الإجابة قصيرة جداً (كلمة أو كلمتين) ومؤكدة ١٠٠٪. لو مش متأكد غيّر السؤال. رجّع JSON بس: {"cats":[{"n":"الكاتيجوري","qs":[{"p":10,"q":"السؤال","a":"الإجابة"}]}]}`+ERA98
 };
 
 const PRE={};
-function prefetch(m){
-  if(!m||PRE[m]||!gk())return;
-  PRE[m]=ask(PROMPTS[m]()).catch(()=>null);
-}
+function prefetch(m){if(!m||PRE[m]||!gk())return;PRE[m]=ask(PROMPTS[m]()).catch(()=>null)}
 
 async function load(){
-  stopT();
-  S.loading=true;
-  S.err='';
-  S.sel=null;
-  S.rev=false;
-  S.exp=false;
-  render();
-
-  const t0=Date.now();
-  clearInterval(window.lt);
-  window.lt=setInterval(()=>{
-    const e=document.getElementById('le');
-    if(e) e.textContent=Math.round((Date.now()-t0)/1000)+' ثانية';
-  },500);
-
+  stopT();S.loading=true;S.err='';S.sel=null;S.rev=false;S.exp=false;render();
+  const t0=Date.now();clearInterval(window.lt);
+  window.lt=setInterval(()=>{const e=document.getElementById('le');if(e)e.textContent=Math.round((Date.now()-t0)/1000)+' ثانية'},500);
   try{
-    let d=PRE[S.mode];
-    delete PRE[S.mode];
-    d=d?await d:null;
-    if(!d) d=await ask(PROMPTS[S.mode]());
-
+    let d=PRE[S.mode];delete PRE[S.mode];d=d?await d:null;if(!d)d=await ask(PROMPTS[S.mode]());
     if(S.mode==='top'){
-      if(!d || !Array.isArray(d.items)) throw { message:'السؤال جه ناقص' };
-
-      const m={};
-      d.items.forEach(it=>{
-        const k=String(it.n||'')
-          .replace(/[\u064B-\u0652ـ]/g,'')
-          .replace(/[أإآ]/g,'ا')
-          .replace(/ة/g,'ه')
-          .replace(/ى/g,'ي')
-          .replace(/\s+/g,' ')
-          .trim()
-          .toLowerCase();
-        if(!k) return;
-        if(!m[k] || (parseInt(it.y)||0) >= (parseInt(m[k].y)||0)) m[k]=it;
-      });
-
-      d.items=Object.values(m)
-        .sort((a,b)=>(parseInt(a.r)||99)-(parseInt(b.r)||99))
-        .slice(0,10)
-        .map((it,i)=>({...it,r:i+1}));
-
-      if(!d.items || d.items.length<10) throw { message:'السؤال جه ناقص' };
-
-      S.q=d;
-      S.found={};
-      S.used.top.push(d.q);
-      startT(60,topExp);
-
+      if(!d||!Array.isArray(d.items))throw{message:'السؤال جه ناقص'};
+      const m={};d.items.forEach(it=>{const k=String(it.n||'').replace(/[\u064B-\u0652ـ]/g,'').replace(/[أإآ]/g,'ا').replace(/ة/g,'ه').replace(/ى/g,'ي').replace(/\s+/g,' ').trim().toLowerCase();if(k&&!m[k])m[k]=it});
+      d.items=Object.values(m).sort((a,b)=>(parseInt(a.r)||99)-(parseInt(b.r)||99)).slice(0,10).map((it,i)=>({...it,r:i+1}));
+      if(d.items.length<10)throw{message:'السؤال جه ناقص ('+d.items.length+'/١٠)'};
+      S.q=d;S.found={};S.used.top.push(d.q);startT(60,topExp);
     }else if(S.mode==='pw'){
-      if(!d || !Array.isArray(d.p)) throw { message:'الرد جه غلط، جرّب تاني' };
-
+      if(!d||!Array.isArray(d.p))throw{message:'الرد جه غلط، جرّب تاني'};
       S.queue=d.p.filter(x=>!S.used.pw.includes(x));
-      if(!S.queue.length){
-        S.queue=d.p.slice();
-        S.used.pw=[];
-      }
-
-      S.used.pw.push(...S.queue);
-      S.show=false;
-
+      if(!S.queue.length){S.queue=d.p.slice();S.used.pw=[]}
+      S.used.pw.push(...S.queue);S.show=false;
     }else if(S.mode==='who'){
-      if(!d || !d.n || !Array.isArray(d.h) || d.h.length<5) throw { message:'اللغز جه ناقص' };
-
-      S.q=d;
-      S.hi=1;
-      S.show=false;
-      S.used.who.push(d.n);
-      startT(60,expR);
-
+      if(!d||!d.n||!Array.isArray(d.h)||d.h.length<5)throw{message:'اللغز جه ناقص'};
+      S.q=d;S.hi=1;S.show=false;S.used.who.push(d.n);startT(60,expR);
     }else{
-      if(!d || !Array.isArray(d.cats)) throw { message:'الجدول جه ناقص' };
-
-      const cats=d.cats.slice(0,4).map(c=>({
-        n:c.n,
-        qs:(c.qs||[]).sort((a,b)=>(parseInt(a.p)||0)-(parseInt(b.p)||0)).slice(0,8)
-      }));
-
-      if(cats.length<4 || cats.some(c=>!c.qs || c.qs.length<8)) throw { message:'الجدول جه ناقص' };
-
+      if(!d||!Array.isArray(d.cats))throw{message:'الجدول جه ناقص'};
+      const cats=d.cats.slice(0,4).map(c=>({n:c.n,qs:(c.qs||[]).sort((a,b)=>(parseInt(a.p)||0)-(parseInt(b.p)||0)).slice(0,8)}));
+      if(cats.length<4||cats.some(c=>!c.qs||c.qs.length<8))throw{message:'الجدول جه ناقص'};
       cats.forEach(c=>S.used.grid.push(c.n));
-
-      S.g={
-        cats,
-        used:{},
-        dbl:Math.floor(Math.random()*32),
-        turn:0,
-        cur:null,
-        isD:false,
-        ans:false
-      };
+      S.g={cats,used:{},dbl:Math.floor(Math.random()*32),turn:0,cur:null,isD:false,ans:false};
     }
-  }catch(e){
-    S.err=(e && e.message) || 'حصلت مشكلة في تحميل السؤال';
-  }
-
-  clearInterval(window.lt);
-  S.loading=false;
-  render();
-
-  if(!S.err) setTimeout(()=>prefetch(S.mode),200);
+  }catch(e){S.err=(e&&e.message)||'حصلت مشكلة في تحميل السؤال'}
+  clearInterval(window.lt);S.loading=false;render();if(!S.err)setTimeout(()=>prefetch(S.mode),200);
 }
 
-function go(m){
-  stopT();
-  S.mode=m;
-  S.sc=[0,0];
-  S.q=null;
-  S.queue=[];
-  S.g=null;
-  S.winner=null;
-  load();
-}
+function go(m){stopT();S.mode=m;S.sc=[0,0];S.q=null;S.queue=[];S.g=null;S.winner=null;load()}
+function home(){stopT();S.mode=null;S.winner=null;S.sel=null;render()}
+function checkWin(){if(!GOAL[S.mode])return;[0,1].forEach(i=>{if(S.winner===null&&S.sc[i]>=GOAL[S.mode]){S.winner=i;S.w[i]++}});if(S.winner!==null)stopT()}
 
-function home(){
-  stopT();
-  S.mode=null;
-  S.winner=null;
-  S.sel=null;
-  render();
-}
-
-function checkWin(){
-  if(!GOAL[S.mode]) return;
-  [0,1].forEach(i=>{
-    if(S.winner===null && S.sc[i]>=GOAL[S.mode]){
-      S.winner=i;
-      S.w[i]++;
-    }
-  });
-  if(S.winner!==null) stopT();
-}
-
-function pickRank(r){
-  if(S.rev) return;
-  S.sel=r;
-  render();
-}
-
+function pickRank(r){if(S.rev)return;S.sel=r;render()}
 function assign(t){
-  const r=S.sel;
-  const old=S.found[r];
-
-  if(old!==undefined) S.sc[old]-=pts(r);
-
-  if(t===-1){
-    delete S.found[r];
-  }else{
-    S.found[r]=t;
-    S.sc[t]+=pts(r);
-    beep(880,.15);
-  }
-
-  S.sel=null;
-  checkWin();
-
-  if(S.winner===null){
-    S.q.items.every(it=>S.found[it.r]!==undefined) ? stopT() : startT(60,topExp);
-  }
-
+  const r=S.sel,old=S.found[r];
+  if(old!==undefined)S.sc[old]-=pts(r);
+  if(t===-1)delete S.found[r];else{S.found[r]=t;S.sc[t]+=pts(r);beep(880,.15)}
+  S.sel=null;checkWin();
+  if(S.winner===null){S.q.items.every(it=>S.found[it.r]!==undefined)?stopT():startT(60,topExp)}
   render();
 }
-
 function got(i){
-  S.sc[i]+=1;
-  beep(880,.15);
-  checkWin();
-  stopT();
-
-  if(S.winner!==null) return render();
-
-  if(S.mode==='pw'){
-    S.queue.shift();
-    S.show=false;
-    S.queue.length ? render() : load();
-  }else{
-    load();
-  }
+  S.sc[i]+=1;beep(880,.15);checkWin();stopT();
+  if(S.winner!==null)return render();
+  if(S.mode==='pw'){S.queue.shift();S.show=false;S.queue.length?render():load()}else load();
 }
+function skipPw(){stopT();S.queue.shift();S.show=false;S.queue.length?render():load()}
+function togShow(){S.show=!S.show;S.show?startT(30,expR):stopT();render()}
+function more(){if(S.hi<5){S.hi++;startT(60,expR);render()}}
 
-function skipPw(){
-  stopT();
-  S.queue.shift();
-  S.show=false;
-  S.queue.length ? render() : load();
-}
-
-function togShow(){
-  S.show=!S.show;
-  S.show ? startT(30,expR) : stopT();
-  render();
-}
-
-function more(){
-  if(S.hi<5){
-    S.hi++;
-    startT(60,expR);
-    render();
-  }
-}
-
-function openQ(c,i){
-  const k=c*8+i;
-  if(S.g.used[k]!==undefined) return;
-
-  S.g.cur={c,i,k};
-  S.g.ans=false;
-  S.g.isD=k===S.g.dbl;
-  startT(60,expR);
-  render();
-}
-
-function backQ(){
-  S.g.cur=null;
-  stopT();
-  render();
-}
-
+function openQ(c,i){const k=c*8+i;if(S.g.used[k]!==undefined)return;S.g.cur={c,i,k};S.g.ans=false;S.g.isD=k===S.g.dbl;startT(60,expR);render()}
+function backQ(){S.g.cur=null;stopT();render()}
 function gAward(t){
-  const g=S.g;
-  const {c,i,k}=g.cur;
-  const p=g.cats[c].qs[i].p*(g.isD?2:1);
-
-  if(t>=0){
-    S.sc[t]+=p;
-    beep(880,.2);
-  }
-
-  g.used[k]=t;
-  g.cur=null;
-  g.turn^=1;
-  stopT();
-
-  if(Object.keys(g.used).length>=32){
-    const [a,b]=S.sc;
-    S.winner=a===b?2:a>b?0:1;
-    if(S.winner<2) S.w[S.winner]++;
-  }
-
+  const g=S.g,{c,i,k}=g.cur,p=g.cats[c].qs[i].p*(g.isD?2:1);
+  if(t>=0){S.sc[t]+=p;beep(880,.2)}
+  g.used[k]=t;g.cur=null;g.turn^=1;stopT();
+  if(Object.keys(g.used).length>=32){const[a,b]=S.sc;S.winner=a===b?2:a>b?0:1;if(S.winner<2)S.w[S.winner]++}
   render();
 }
 
@@ -728,22 +401,21 @@ function hud(home){
 function render(){
   if(!S.mode){
     const m=(f,i,n,s,c1,c2,c3)=>`<button class="mc" style="--c1:${c1};--c2:${c2};--c3:${c3}" onclick="pick('${f}')"><i>${i}</i><b>${n}</b><small>${s}</small></button>`;
-
+    const avail=gModels(),cur=gm();
+    const chips=avail.length?`<div class="mlist">${avail.slice(0,12).map(x=>`<button class="mchip ${x===cur?'on':''}" onclick="chooseModel('${esc(x)}')">${esc(x)}</button>`).join('')}</div>`:'';
     $.innerHTML=`<div class="logo"><b>⚽</b><h1>صباحو كورة</h1><p>الأسئلة بتتولّد أونلاين — اختار اللعبة</p></div>
     <div class="card">
-      <p class="mu" style="margin:0 0 8px">🔑 مزوّد الذكاء الاصطناعي والمفتاح (بيتحفظ على جهازك بس)</p>
+      <p class="mu" style="margin:0 0 8px">🔑 المزود والمفتاح (بيتحفظوا على جهازك بس)</p>
       <select id="gp" onchange="setProv(this.value)">
         <option value="groq" ${gp()==='groq'?'selected':''}>⚡ Groq (الأسرع) — console.groq.com</option>
         <option value="gemini" ${gp()==='gemini'?'selected':''}>💎 Gemini — aistudio.google.com/api-keys</option>
       </select>
       <input id="gk" type="password" dir="ltr" placeholder="${gp()==='groq'?'gsk_...':'AIza...'}" value="${esc(gk())}" style="margin-top:8px">
-      <input id="gm" dir="ltr" value="${esc(gm())}" style="margin-top:8px">
-      <button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ</button>
-      <div class="row" style="margin-top:8px">
-        <button class="sec" onclick="testConn()">اختبار الاتصال</button>
-        <button class="sec" onclick="listModels()">الموديلات المتاحة</button>
-      </div>
-      <pre id="gst" dir="auto" style="white-space:pre-wrap;color:var(--mu);font-size:13px;margin:8px 0 0"></pre>
+      <input id="gm" dir="ltr" value="${esc(cur)}" style="margin-top:8px" placeholder="الموديل بيتاختار أوتوماتيك">
+      <button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ وجيب الموديلات المتاحة</button>
+      <div class="row" style="margin-top:8px"><button class="sec" onclick="testConn()">اختبار الاتصال</button><button class="sec" onclick="refreshModels()">تحديث الموديلات</button></div>
+      ${chips}
+      <pre id="gst" dir="auto" style="white-space:pre-wrap;color:var(--mu);font-size:13px;margin:8px 0 0">${avail.length?'الموديلات المتاحة: '+avail.length+' — المختار: '+esc(cur):'⚠️ ضيف المفتاح ودوس حفظ عشان نجيب الموديلات المتاحة لمفتاحك'}</pre>
     </div>
     <div class="card"><div class="row"><input id="n0" value="${esc(S.t[0])}" maxlength="20"><input id="n1" value="${esc(S.t[1])}" maxlength="20"></div></div>
     ${hud(true)}
@@ -755,32 +427,20 @@ function render(){
     </div>`;
     return;
   }
-
   let body='',sheet='';
   const exb=S.exp?'<div class="ex">⏰ الوقت خلص!</div>':'';
-
-  if(S.loading){
-    body=`<div class="card load"><span>⚽</span><p>بنجهّز الأسئلة...</p><p class="mu" id="le"></p></div>`;
-  }else if(S.err){
-    body=`<div class="card"><p class="err">⚠️ ${esc(S.err)}</p><button class="w" onclick="load()">جرّب تاني</button></div>`;
-  }else if(S.winner!==null){
-    body=`<div class="card win"><div style="font-size:64px">${S.winner===2?'🤝':'🏆'}</div><h2>${S.winner===2?'تعادل!':esc(S.t[S.winner])+' كسب كاتيجوري '+NAMES[S.mode]+'!'}</h2><button class="w" onclick="home()">رجوع للقايمة</button></div>`;
-  }else if(S.mode==='top'&&S.q){
+  if(S.loading)body=`<div class="card load"><span>⚽</span><p>بنجهّز الأسئلة...</p><p class="mu" id="le"></p></div>`;
+  else if(S.err)body=`<div class="card"><p class="err">⚠️ ${esc(S.err)}</p><button class="w" onclick="load()">جرّب تاني</button></div>`;
+  else if(S.winner!==null)body=`<div class="card win"><div style="font-size:64px">${S.winner===2?'🤝':'🏆'}</div><h2>${S.winner===2?'تعادل!':esc(S.t[S.winner])+' كسب كاتيجوري '+NAMES[S.mode]+'!'}</h2><button class="w" onclick="home()">رجوع للقايمة</button></div>`;
+  else if(S.mode==='top'&&S.q){
     body=`<div class="card"><p class="q">${esc(S.q.q)}</p>${S.q.o?`<div class="ord">📊 ${esc(S.q.o)}</div>`:''}<p class="mu">دوس على الإجابة اللي اتجابت واختار الفريق</p>${S.rev?'<div class="ex">⏰ الوقت خلص! الإجابات اتكشفت</div>':''}`+
-    [...S.q.items].sort((a,b)=>a.r-b.r).map(it=>{
-      const f=S.found[it.r];
-      const x=f===undefined&&S.rev;
-      return `<button class="slot ${f!==undefined?'f '+(f?'b':'a'):x?'f x':''} ${it.r>=8?'k':''}" onclick="pickRank(${it.r})"><i>${it.r}</i>${esc(it.n)}<u>${ptx(it.r)}</u><em>${esc(it.s)}</em></button>`;
-    }).join('')+
+    [...S.q.items].sort((a,b)=>a.r-b.r).map(it=>{const f=S.found[it.r];const x=f===undefined&&S.rev;
+      return `<button class="slot ${f!==undefined?'f '+(f?'b':'a'):x?'f x':''} ${it.r>=8?'k':''}" onclick="pickRank(${it.r})"><i>${it.r}</i>${esc(it.n)}<u>${ptx(it.r)}</u><em>${esc(it.s)}</em></button>`}).join('')+
     `<button class="sec w" onclick="load()" style="margin-top:6px">سؤال جديد ▶</button></div>`;
-
-    if(S.sel!==null){
-      const it=S.q.items.find(x=>x.r===S.sel);
-      const f=S.found[S.sel];
+    if(S.sel!==null){const it=S.q.items.find(x=>x.r===S.sel),f=S.found[S.sel];
       sheet=`<div class="ov" onclick="S.sel=null;render()"><div class="sheet" onclick="event.stopPropagation()"><h3>${esc(it.n)}</h3><p class="mu">رقم ${it.r} — ${ptx(it.r)}. مين جاوبها؟</p>
       <div class="row"><button class="ta" onclick="assign(0)">${esc(S.t[0])}</button><button class="tb" onclick="assign(1)">${esc(S.t[1])}</button></div>
-      ${f!==undefined?`<button class="sec w" style="margin-top:12px" onclick="assign(-1)">إلغاء الإجابة</button>`:''}</div></div>`;
-    }
+      ${f!==undefined?`<button class="sec w" style="margin-top:12px" onclick="assign(-1)">إلغاء الإجابة</button>`:''}</div></div>`;}
   }else if(S.mode==='pw'&&S.queue.length){
     body=`<div class="card"><p class="mu">اتنين (واحد من كل فريق) يشوفوا الاسم ويدّوا كلوز لفريقهم من غير ما يقولوا الاسم — ٣٠ ثانية لكل كلو</p>
     <div class="big">${S.show?esc(S.queue[0]):'🙈 ••••••'}</div>${exb}
@@ -798,15 +458,9 @@ function render(){
   }else if(S.mode==='grid'&&S.g){
     const g=S.g;
     body=`<p class="mu">الدور على: <b style="color:var(--gold)">${esc(S.t[g.turn])}</b> — اختار خانة (فيه خانة واحدة مخبّية دبل 🔥)</p><div class="gb">`+
-    g.cats.map((c,ci)=>`<div class="gc"><div class="gh">${esc(c.n)}</div>`+c.qs.map((q,i)=>{
-      const k=ci*8+i;
-      const u=g.used[k];
-      return `<button class="tile ${u===undefined?'':'u '+(u<0?'x':u?'b':'a')}" data-p="${q.p}" ${u===undefined?'':'disabled'} onclick="openQ(${ci},${i})">${u===undefined?q.p:(u<0?'✖':q.p*(k===g.dbl?2:1))}</button>`;
-    }).join('')+`</div>`).join('')+`</div>`;
-
-    if(g.cur){
-      const c=g.cats[g.cur.c];
-      const q=c.qs[g.cur.i];
+    g.cats.map((c,ci)=>`<div class="gc"><div class="gh">${esc(c.n)}</div>`+c.qs.map((q,i)=>{const k=ci*8+i,u=g.used[k];
+      return `<button class="tile ${u===undefined?'':'u '+(u<0?'x':u?'b':'a')}" data-p="${q.p}" ${u===undefined?'':'disabled'} onclick="openQ(${ci},${i})">${u===undefined?q.p:(u<0?'✖':q.p*(k===g.dbl?2:1))}</button>`}).join('')+`</div>`).join('')+`</div>`;
+    if(g.cur){const c=g.cats[g.cur.c],q=c.qs[g.cur.i];
       sheet=`<div class="ov"><div class="sheet"><div class="qh"><span>${esc(c.n)}</span><span class="pt">${q.p}${g.isD?' ×٢':''}</span></div>
       ${g.isD?'<div class="dbl">🔥 دبل بوينتس! النقط ×٢ 🔥</div>':''}
       <div style="width:130px;margin:8px auto 0">${tbox()}</div>${exb}
@@ -814,47 +468,24 @@ function render(){
       ${g.ans?`<div class="ans">${esc(q.a)}</div>`:`<button class="sec w" onclick="S.g.ans=true;stopT();render()">اكشف الإجابة</button>`}
       <p class="mu">مين جاوب صح؟ (${q.p*(g.isD?2:1)} نقطة)</p>
       <div class="row"><button class="ta" onclick="gAward(0)">${esc(S.t[0])}</button><button class="tb" onclick="gAward(1)">${esc(S.t[1])}</button></div>
-      <div class="row" style="margin-top:12px"><button class="sec" onclick="gAward(-1)">محدش جاوب</button><button class="sec" onclick="backQ()">رجوع</button></div></div></div>`;
-    }
+      <div class="row" style="margin-top:12px"><button class="sec" onclick="gAward(-1)">محدش جاوب</button><button class="sec" onclick="backQ()">رجوع</button></div></div></div>`;}
   }
-
   $.innerHTML=`<div class="top"><button class="sec" onclick="home()">→ القايمة</button><b>${NAMES[S.mode]}</b><span style="width:92px"></span></div>`+hud(false)+body+sheet;
   paint();
 }
 
 function pick(m){
-  const a=document.getElementById('n0');
-  const b=document.getElementById('n1');
-  saveKey();
-  S.t=[a.value.trim()||'الفريق الأحمر',b.value.trim()||'الفريق الأزرق'];
+  const a=document.getElementById('n0'),b=document.getElementById('n1');
+  saveKey();S.t=[a.value.trim()||'الفريق الأحمر',b.value.trim()||'الفريق الأزرق'];
   go(m);
 }
 
-const _r=render;
-render=function(){
-  saveUsed();
-  _r();
-  if(S.winner===null) S.cf=0;
-  else if(S.winner<2 && !S.cf){
-    S.cf=1;
-    confetti();
-  }
-};
+const _r=render;render=function(){saveUsed();_r();if(S.winner===null)S.cf=0;else if(S.winner<2&&!S.cf){S.cf=1;confetti()}};
+function confetti(){const c=['#ffc928','#22e07a','#ff4b55','#3b8cff','#a855f7'];for(let i=0;i<50;i++){const e=document.createElement('i');e.className='cf';e.style.cssText=`left:${Math.random()*100}vw;background:${c[i%5]};animation-delay:${Math.random()*.8}s;animation-duration:${2+Math.random()*2}s`;document.body.appendChild(e);setTimeout(()=>e.remove(),5000)}beep(660,.15);setTimeout(()=>beep(880,.25),180)}
 
-function confetti(){
-  const c=['#ffc928','#22e07a','#ff4b55','#3b8cff','#a855f7'];
-  for(let i=0;i<50;i++){
-    const e=document.createElement('i');
-    e.className='cf';
-    e.style.cssText=`left:${Math.random()*100}vw;background:${c[i%5]};animation-delay:${Math.random()*.8}s;animation-duration:${2+Math.random()*2}s`;
-    document.body.appendChild(e);
-    setTimeout(()=>e.remove(),5000);
-  }
-  beep(660,.15);
-  setTimeout(()=>beep(880,.25),180);
-}
-
+// عند الفتح: لو فيه مفتاح محفوظ، جيب الموديلات المتاحة أوتوماتيك
 render();
+if(gk()&&!gModels().length) refreshModels(true);
 </script>
 </body>
 </html>
