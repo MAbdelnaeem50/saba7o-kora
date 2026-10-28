@@ -130,15 +130,12 @@ button.sec{border:1px solid #2f4d7c}
 const $=document.getElementById('app');
 const GOAL={top:100,pw:5,who:3};
 const NAMES={top:'توب ١٠',pw:'باسورد',who:'مين أنا؟',grid:'الجدول'};
-const S={t:['الفريق الأحمر','الفريق الأزرق'],w:[0,0],sc:[0,0],mode:null,used:{top:[],pw:[],who:[],grid:[]},loading:false,err:'',q:null,queue:[],found:{},sel:null,show:false,hi:1,winner:null,tl:null,max:60,rev:false,exp:false,g:null,strict:true,gridEdit:true,editGrid:false,round:0,flash:null};
+const S={t:['الفريق الأحمر','الفريق الأزرق'],w:[0,0],sc:[0,0],mode:null,used:{top:[],pw:[],who:[],grid:[]},loading:false,err:'',q:null,queue:[],found:{},sel:null,show:false,hi:1,winner:null,tl:null,max:60,rev:false,exp:false,g:null,strict:false,gridEdit:false,fast:true,editGrid:false,round:0,flash:null};
 let iv=null,ac,flashTo=null;
 
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pts=r=>r,ptx=r=>r===1?'نقطة':r===2?'نقطتين':r+' نقط';
 
-/* ============================================================
-   NEW: HEDGING DETECTION + STRUCTURAL VALIDATION
-   ============================================================ */
 const HEDGE_PATTERNS=[
   /تقريب[اً]?\s*[\d٠-٩]/,
   /حوالي\s*[\d٠-٩]/,
@@ -158,7 +155,6 @@ function topLooksGood(d){
   if(!d||!Array.isArray(d.items)||d.items.length<10)return false;
   const fields=[d.q,d.o].concat(d.items.flatMap(it=>[it.n,it.s,it.y]));
   if(fields.some(hasHedge))return false;
-  // order check when s is numeric
   const sorted=[...d.items].sort((a,b)=>(parseInt(a.r)||99)-(parseInt(b.r)||99));
   const nums=sorted.map(it=>{
     const m=String(it.s||'').match(/-?\d+(?:[.,]\d+)?/);
@@ -166,7 +162,7 @@ function topLooksGood(d){
   });
   if(nums.every(n=>n!==null)){
     for(let i=1;i<nums.length;i++){
-      if(nums[i]>nums[i-1]+0.001)return false; // should be descending
+      if(nums[i]>nums[i-1]+0.001)return false;
     }
   }
   return true;
@@ -194,38 +190,6 @@ function trySortByS(items){
   return [...items].map((it,i)=>({it,v:nums[i]}))
     .sort((a,b)=>b.v-a.v)
     .map((x,i)=>({...x.it,r:i+1}));
-}
-
-/* JSON schema for Groq structured outputs */
-function jsonSchemaFor(mode){
-  if(mode==='top')return{type:'json_schema',json_schema:{name:'top10',strict:true,schema:{
-    type:'object',additionalProperties:false,required:['q','o','items'],
-    properties:{
-      q:{type:'string'},o:{type:'string'},
-      items:{type:'array',items:{type:'object',additionalProperties:false,required:['r','n','s','y'],
-        properties:{r:{type:'integer'},n:{type:'string'},s:{type:'string'},y:{type:'string'}}}}
-    }
-  }}};
-  if(mode==='grid')return{type:'json_schema',json_schema:{name:'grid',strict:true,schema:{
-    type:'object',additionalProperties:false,required:['cats'],
-    properties:{
-      cats:{type:'array',items:{type:'object',additionalProperties:false,required:['n','qs'],
-        properties:{
-          n:{type:'string'},
-          qs:{type:'array',items:{type:'object',additionalProperties:false,required:['p','q','a'],
-            properties:{p:{type:'integer'},q:{type:'string'},a:{type:'string'}}}}
-        }}}
-    }
-  }}};
-  if(mode==='pw')return{type:'json_schema',json_schema:{name:'pw',strict:true,schema:{
-    type:'object',additionalProperties:false,required:['p'],
-    properties:{p:{type:'array',items:{type:'string'}}}
-  }}};
-  if(mode==='who')return{type:'json_schema',json_schema:{name:'who',strict:true,schema:{
-    type:'object',additionalProperties:false,required:['n','h'],
-    properties:{n:{type:'string'},h:{type:'array',items:{type:'string'}}}
-  }}};
-  return null;
 }
 
 function beep(f,d){
@@ -303,66 +267,44 @@ const LS=(k,v)=>{
   return null;
 };
 
-S.strict=LS('sk_strict')!=='0';
-S.gridEdit=LS('sk_grid_edit')!=='0';
+S.strict=LS('sk_strict')==='1';
+S.gridEdit=LS('sk_grid_edit')==='1';
+S.fast=LS('sk_fast')!=='0';
 
-const gp=()=>LS('sk_prov')||'groq';
-const gk=()=>LS('sk_key_'+gp())||'';
-const gm=()=>LS('sk_model_'+gp())||'';
+const gk=()=>LS('sk_gemini_key')||'';
+const gm=()=>LS('sk_gemini_model')||'gemini-2.5-flash';
 const gModels=()=>{
-  try{return JSON.parse(LS('sk_models_'+gp())||'[]')}catch(e){return []}
+  try{return JSON.parse(LS('sk_gemini_models')||'[]')}catch(e){return []}
 };
 
 async function fetchAvailable(){
-  const prov=gp(),key=gk();
+  const key=gk();
   if(!key) throw {message:'ضيف المفتاح الأول'};
 
-  if(prov==='groq'){
-    const r=await fetch('https://api.groq.com/openai/v1/models',{headers:{'Authorization':'Bearer '+key}});
-    const j=await r.json();
-    if(!r.ok) throw {message:(j.error&&j.error.message)||r.status};
-    return (j.data||[])
-      .map(m=>m.id)
-      .filter(id=>/llama|qwen|gpt-oss|kimi|grok|magistral|deepseek|mistral-large/i.test(id) && !/whisper|guard|tts|playai|embed|compound|orion|prompt|custom|vercel|tool-use|safety|moderation/i.test(id));
-  }else{
-    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{headers:{'x-goog-api-key':key}});
-    const j=await r.json();
-    if(!r.ok) throw {message:(j.error&&j.error.message)||r.status};
-    return (j.models||[])
-      .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
-      .map(m=>m.name.replace('models/',''))
-      .filter(n=>/flash|pro|lite/i.test(n));
-  }
+  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{headers:{'x-goog-api-key':key}});
+  const j=await r.json();
+  if(!r.ok) throw {message:(j.error&&j.error.message)||r.status};
+  return (j.models||[])
+    .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+    .map(m=>m.name.replace('models/',''))
+    .filter(n=>/flash|pro|lite/i.test(n));
 }
 
-function rankModels(list,prov){
+function rankModels(list){
   const score=id=>{
     let s=0;
     const l=id.toLowerCase();
 
-    if(prov==='groq'){
-      if(/qwen3.*235b|qwen3-235b/.test(l)) s+=110;
-      if(/llama-4-maverick/.test(l)) s+=105;
-      if(/kimi-k2/.test(l)) s+=100;
-      if(/gpt-oss-120b/.test(l)) s+=95;
-      if(/grok-4|grok-3/.test(l)) s+=90;
-      if(/llama-3\.3-70b/.test(l)) s+=80;
-      if(/magistral-medium/.test(l)) s+=75;
-      if(/deepseek/.test(l)) s+=70;
-      if(/qwen.*32b/.test(l)) s+=60;
-      if(/gpt-oss-20b/.test(l)) s+=55;
-      if(/llama-4-scout/.test(l)) s+=50;
-      if(/llama-3\.1-70b/.test(l)) s+=45;
-      if(/llama-3\.1-8b/.test(l)) s+=20;
-      if(/-preview|-next|-exp/.test(l)) s-=20;
-    }else{
-      if(/gemini-3.*flash/.test(l)) s+=110;
-      if(/gemini-2.*flash/.test(l)&&!/lite/.test(l)) s+=100;
-      if(/gemini-1.*flash/.test(l)) s+=80;
-      if(/gemini.*pro/.test(l)) s+=60;
-      if(/lite/.test(l)) s-=10;
-      if(/-exp|-preview/.test(l)) s-=20;
-    }
+    if(/gemini-3.*flash/.test(l)) s+=140;
+    if(/gemini-2\.5-flash/.test(l)) s+=130;
+    if(/gemini-2\.0-flash/.test(l)) s+=120;
+    if(/gemini-flash-latest/.test(l)) s+=115;
+    if(/gemini-1\.5-flash/.test(l)) s+=100;
+    if(/gemini-2.*flash/.test(l)&&!/lite/.test(l)) s+=90;
+    if(/gemini.*pro/.test(l)) s+=40;
+    if(/lite/.test(l)) s-=15;
+    if(/-exp|-preview|-experimental/.test(l)) s-=25;
+    if(/thinking|embedding|aqa|vision|audio|video/i.test(l)) s-=50;
 
     return s;
   };
@@ -375,14 +317,14 @@ async function refreshModels(silent){
   if(!silent&&o) o.textContent='⏳ بجيب الموديلات المتاحة لمفتاحك...';
 
   try{
-    const list=rankModels(await fetchAvailable(),gp());
-    LS('sk_models_'+gp(),JSON.stringify(list));
+    const list=rankModels(await fetchAvailable());
+    LS('sk_gemini_models',JSON.stringify(list));
 
-    if(!gm()||!list.includes(gm())) LS('sk_model_'+gp(),list[0]||'');
+    if(list.length && (!gm()||!list.includes(gm()))) LS('sk_gemini_model',list[0]);
 
     if(o){
       o.textContent=list.length
-        ?('✅ لقينا '+list.length+' موديل شغال — المختار: '+list[0])
+        ?('✅ لقينا '+list.length+' موديل شغال — المختار: '+(gm()||list[0]))
         :'⚠️ مفيش موديلات متاحة للمفتاح ده';
     }
 
@@ -395,10 +337,8 @@ async function refreshModels(silent){
 }
 
 function saveKey(silent){
-  const p=document.getElementById('gp').value;
   const k=document.getElementById('gk').value.trim();
-  LS('sk_prov',p);
-  LS('sk_key_'+p,k);
+  LS('sk_gemini_key',k);
 
   const b=document.getElementById('gsv');
   if(b){
@@ -409,129 +349,100 @@ function saveKey(silent){
   refreshModels(!!silent);
 }
 
-function setProv(p){
-  LS('sk_prov',p);
-  document.getElementById('gk').value=LS('sk_key_'+p)||'';
-  document.getElementById('gk').placeholder=p==='groq'?'gsk_...':'AIza...';
-  document.getElementById('gm').value=LS('sk_model_'+p)||'';
-  render();
-}
-
-function chooseModel(m){LS('sk_model_'+gp(),m);render()}
+function chooseModel(m){LS('sk_gemini_model',m);render()}
 function togStrict(v){S.strict=v;LS('sk_strict',v?'1':'0')}
 function togGridEdit(v){S.gridEdit=v;LS('sk_grid_edit',v?'1':'0')}
+function togFast(v){S.fast=v;LS('sk_fast',v?'1':'0')}
 
 const sleep=ms=>new Promise(z=>setTimeout(z,ms));
-const CFGS=[{thinkingConfig:{thinkingLevel:'low'}},{thinkingConfig:{thinkingBudget:0}},{}];
-let GCI=0;
 
-const FACT_RULES=`Today is 2026. Use ONLY verified, well-known football facts from 1998 through 2026. The earliest allowed year/season is 1998. Never invent statistics, dates, names, rankings, or numbers. NO HEDGING WORDS — never use "تقريباً/حوالي/من المحتمل/بيقال/ربما/likely/approximately/about/around". Answers must be exact numbers or exact facts. If you are not 100% sure, replace the fact with a safer widely documented one. All user-facing strings must be in Egyptian Arabic.`;
+const FACT_RULES=`Today is 2026. Use only verified football facts from 1998 through 2026. No invented stats, dates, names, rankings, or numbers. NO HEDGING WORDS. Exact numbers/facts only. All user-facing strings in Egyptian Arabic. Return compact valid JSON only.`;
 
-/* ============================================================
-   MODIFIED once(): accepts mode for structured outputs
-   ============================================================ */
-async function once(prov,model,p,big,sig,key,attempt=0,mode=null){
-  let r;
+async function once(model,p,big,sig,key){
+  const isGrid=p.includes('"cats"');
+  const isTop=p.includes('"items"');
+  const baseMax=isGrid?4800:(isTop?3000:1200);
 
-  if(prov==='groq'){
-    const baseSys=`You are a strict football quiz generator and fact-checker. ${FACT_RULES} Output ONE valid JSON object only. No markdown fences. No comments. No trailing commas. Escape all quotes inside Arabic strings. Keep every string concise.`;
+  const configs=[
+    {temperature:0,maxOutputTokens:baseMax,responseMimeType:'application/json',thinkingConfig:{thinkingBudget:0}},
+    {temperature:0,maxOutputTokens:baseMax,responseMimeType:'application/json'},
+    {temperature:0.1,maxOutputTokens:baseMax+1000,responseMimeType:'application/json'}
+  ];
 
-    const retryNote=attempt===0
-      ?''
-      :attempt===1
-        ?'\nPrevious output was invalid JSON. Return ONLY raw JSON, simpler structure.'
-        :'\nReturn a minimal valid JSON object with exactly the requested keys. No extra text at all.';
+  let lastErr=null;
 
-    const maxTok=big?(attempt===0?8000:7000):(attempt===0?3000:2500);
-
-    const payload={
-      model,
-      messages:[
-        {role:'system',content:baseSys+retryNote},
-        {role:'user',content:p}
-      ],
-      temperature:attempt===0?0.2:0,
-      max_completion_tokens:maxTok
-    };
-
-    if(attempt===0){
-      // NEW: try structured output first, fall back to json_object on attempt 1+
-      const sch=mode?jsonSchemaFor(mode):null;
-      payload.response_format=sch||{type:'json_object'};
-    }else{
-      payload.response_format={type:'json_object'};
-    }
-
-    r=await fetch('https://api.groq.com/openai/v1/chat/completions',{
-      method:'POST',
-      signal:sig,
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-      body:JSON.stringify(payload)
-    });
-
-  }else{
-    const maxTok=big?(attempt===0?8000:6000):3000;
-
-    r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{
-      method:'POST',
-      signal:sig,
-      headers:{'Content-Type':'application/json','x-goog-api-key':key},
-      body:JSON.stringify({
-        contents:[{parts:[{text:FACT_RULES+'\n'+p}]}],
-        generationConfig:{
-          responseMimeType:'application/json',
-          temperature:attempt===0?0.2:0,
-          maxOutputTokens:maxTok,
-          ...CFGS[Math.min(GCI,CFGS.length-1)]
-        }
-      })
-    });
-  }
-
-  if(!r.ok){
-    let m='';
+  for(const genCfg of configs){
     try{
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{
+        method:'POST',
+        signal:sig,
+        headers:{'Content-Type':'application/json','x-goog-api-key':key},
+        body:JSON.stringify({
+          contents:[{parts:[{text:FACT_RULES+'\n'+p}]}],
+          generationConfig:genCfg
+        })
+      });
+
+      if(!r.ok){
+        let m='';
+        try{
+          const j=await r.json();
+          m=(j.error&&j.error.message)||JSON.stringify(j).slice(0,300);
+        }catch(e){}
+        const err={message:'Gemini: '+(m||r.status),status:r.status};
+        if(r.status===400 && /thinking|responseMimeType|generationConfig|schema|temperature/i.test(m)){
+          lastErr=err;
+          continue;
+        }
+        throw err;
+      }
+
       const j=await r.json();
-      m=(j.error&&j.error.message)||JSON.stringify(j).slice(0,300);
-    }catch(e){}
-    throw {message:(prov==='groq'?'Groq: ':'Gemini: ')+(m||r.status),status:r.status};
-  }
 
-  const j=await r.json();
+      if(j.promptFeedback&&j.promptFeedback.blockReason){
+        throw {message:'Gemini: السؤال اتحجب بسبب السلامة ('+j.promptFeedback.blockReason+')',status:451};
+      }
 
-  const txt=prov==='groq'
-    ?((j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content)||'')
-    :((j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[])
-      .filter(x=>!x.thought)
-      .map(x=>x.text||'')
-      .join(''));
+      const txt=((j.candidates&&j.candidates[0]&&j.candidates[0].content?j.candidates[0].content.parts:[])
+        .filter(x=>!x.thought)
+        .map(x=>x.text||'')
+        .join(''));
 
-  let clean=txt.replace(/<think>[\s\S]*?<\/think>/g,'').replace(/```json|```/g,'').trim();
+      let clean=txt.replace(/<think>[\s\S]*?<\/think>/g,'').replace(/```json|```/g,'').trim();
 
-  let out=null;
-  try{
-    out=JSON.parse(clean);
-  }catch(e){
-    const a=clean.indexOf('{'),b=clean.lastIndexOf('}');
-    if(a>-1&&b>a){
-      try{out=JSON.parse(clean.slice(a,b+1))}catch(e2){}
+      let out=null;
+      try{
+        out=JSON.parse(clean);
+      }catch(e){
+        const a=clean.indexOf('{'),b=clean.lastIndexOf('}');
+        if(a>-1&&b>a){
+          try{out=JSON.parse(clean.slice(a,b+1))}catch(e2){}
+        }
+      }
+
+      if(out) return out;
+
+      lastErr={message:'Gemini: JSON طلع غير صالح',status:0,jsonError:true};
+    }catch(e){
+      if(e.name==='AbortError') throw e;
+      if(e.status===400 && /thinking|responseMimeType|generationConfig|schema|temperature/i.test(String(e.message||''))){
+        lastErr=e;
+        continue;
+      }
+      throw e;
     }
   }
 
-  if(!out) throw {message:(prov==='groq'?'Groq: ':'Gemini: ')+'JSON طلع غير صالح',status:0,jsonError:true};
-
-  return out;
+  throw lastErr||{message:'Gemini: فشل'};
 }
 
-/* ============================================================
-   MODIFIED ask(): threads mode for schema + retries on schema 400
-   ============================================================ */
-async function ask(p,tmo,mode){
-  const prov=gp(),key=gk();
+async function ask(p,tmo){
+  const key=gk();
+  if(!key) throw {message:'ضيف مفتاح Google Gemini الأول من الشاشة الرئيسية.'};
+
   const big=p.includes('"cats"')||p.includes('"items"');
 
-  if(!key) throw {message:'ضيف مفتاح الـ API الأول من الشاشة الرئيسية.'};
-  if(tmo==null) tmo=big?60000:35000;
+  if(tmo==null) tmo=S.fast?(big?35000:18000):(big?60000:35000);
 
   const avail=gModels();
   const chosen=gm();
@@ -542,19 +453,20 @@ async function ask(p,tmo,mode){
     models.push(...gModels());
   }
 
-  if(!models.length) throw {message:'مفيش موديلات متاحة للمفتاح ده. دوس "تحديث الموديلات" أو غيّر المفتاح.'};
+  if(!models.length) models.push(chosen||'gemini-2.5-flash');
 
   let last=null;
+  const attempts=S.fast?1:2;
 
   for(const m of models){
-    for(let t=0;t<3;t++){
+    for(let t=0;t<attempts;t++){
       const ctrl=new AbortController();
       const to=setTimeout(()=>ctrl.abort(),tmo);
 
       try{
-        const d=await once(prov,m,p,big,ctrl.signal,key,t,mode);
+        const d=await once(m,p,big,ctrl.signal,key);
         clearTimeout(to);
-        if(m!==chosen) LS('sk_model_'+gp(),m);
+        if(m!==chosen) LS('sk_gemini_model',m);
         return d;
       }catch(err){
         clearTimeout(to);
@@ -563,7 +475,7 @@ async function ask(p,tmo,mode){
         const msg=String(err&&err.message||'');
 
         if(err&&err.name==='AbortError'){
-          if(t<2)continue;
+          if(t<attempts-1)continue;
           break;
         }
 
@@ -572,13 +484,12 @@ async function ask(p,tmo,mode){
         }
 
         if(err&&(err.status===429||err.status===503)){
-          await sleep(2500*(t+1));
+          await sleep(S.fast?900*(t+1):2500*(t+1));
           continue;
         }
 
-        // NEW: also retry when schema is rejected (falls back to json_object)
-        if(err&&err.status===400&&/response_format|json_object|json_schema|schema|additionalProperties|required/i.test(msg)){
-          if(t<2)continue;
+        if(err&&err.status===400&&/response_format|json_object|json_schema|schema|additionalProperties|required|thinking|responseMimeType|generationConfig/i.test(msg)){
+          if(t<attempts-1)continue;
           break;
         }
 
@@ -587,11 +498,11 @@ async function ask(p,tmo,mode){
         }
 
         if(err&&err.jsonError){
-          if(t<2)continue;
+          if(t<attempts-1)continue;
           break;
         }
 
-        if(t<1)continue;
+        if(t<attempts-1)continue;
         break;
       }
     }
@@ -600,19 +511,16 @@ async function ask(p,tmo,mode){
   throw {message:(last&&last.message)||'فشل الاتصال. جرّب تاني.'};
 }
 
-/* ============================================================
-   MODIFIED review(): stronger prompts, threads mode
-   ============================================================ */
 async function review(mode,d){
   const json=JSON.stringify(d);
 
   if(mode==='grid'){
-    const p='You are a RUTHLESS football fact-checker. Another AI generated this quiz grid. Your job is to INDEPENDENTLY verify and fix it.\n\nSTEP 1 — Read the 4 categories and think from your own knowledge: are these categories and their 8 questions each 100% correct for 1998-2026?\nSTEP 2 — Check EVERY question: is the answer unique, short, and correct? Is it really verifiable?\nSTEP 3 — If ANY question, answer, or category is uncertain, wrong, ambiguous, or pre-1998, REPLACE it with a safer 100% verified football fact.\nSTEP 4 — Difficulty must be strict: two p=10 easy, two p=20 medium, two p=30 hard, two p=40 very hard per category.\n\nHARD RULES:\n- NO hedging words (تقريباً، حوالي، من المحتمل، بيقال، ربما، likely، about, around).\n- Answers short, unique, in Egyptian Arabic.\n- Every fact must be 100% verifiable.\n- Return ONLY corrected JSON with same structure.\n\nJSON:\n'+json;
-    return await ask(p,75000,'grid');
+    const p='راجع الجدول ده كمُدقق كرة قدم صارم. صلح أي خطأ، أي حاجة قبل 1998، أي كلام تقريبي، أي إجابة مش حصرية، أو أي صعوبة مش مظبوطة. حافظ على نفس هيكل JSON بالضبط. رجّع JSON فقط بدون شرح.\n\nJSON:\n'+json;
+    return await ask(p,S.fast?50000:75000);
   }
 
-  const p='You are a RUTHLESS football fact-checker. Another AI generated this Top 10. Your job is to INDEPENDENTLY verify and fix it.\n\nSTEP 1 — Read the question. Think from your own knowledge: what ARE the actual top 10 for this question from 1998-2026?\nSTEP 2 — Compare with the given list. Check EVERY item:\n  • Is the name real and correct (Arabic spelling)?\n  • Is the statistic/year (s) exact and correct?\n  • Is the RANK ORDER (r) correct? r=1 must be the MOST (or NEWEST for time-based). Any item out of order → fix it.\n  • Any duplicate?\nSTEP 3 — If ANYTHING is uncertain, wrong, or out of order, FIX it. If too many errors, REPLACE the whole question with a safer one.\nSTEP 4 — Verify the final order is STRICTLY correct.\n\nHARD RULES:\n- NO hedging words (تقريباً، حوالي، من المحتمل، بيقال، ربما، likely، about, around).\n- Every s must be an exact number or exact fact.\n- Every item 100% verifiable from 1998-2026.\n- Names well-known to Arabic football fans.\n- Return ONLY corrected JSON with same structure.\n\nJSON:\n'+json;
-  return await ask(p,65000,'top');
+  const p='راجع التوب 10 ده كمُدقق كرة قدم صارم. تأكد من الأسماء، القيم، السنوات، اتجاه الترتيب، وأن r=1 هو الأكبر أو الأحدث حسب السؤال. صلح أي خطأ أو استبدل السؤال بحقيقة أكثر توثيقًا لو فيه شك. حافظ على نفس هيكل JSON بالضبط. رجّع JSON فقط بدون شرح.\n\nJSON:\n'+json;
+  return await ask(p,S.fast?45000:65000);
 }
 
 async function testConn(){
@@ -622,7 +530,7 @@ async function testConn(){
   const t0=Date.now();
 
   try{
-    await ask('رجّع JSON بس: {"ok":true}',20000);
+    await ask('رجّع JSON بس: {"ok":true}',S.fast?12000:20000);
     o.textContent='✅ شغال — '+gm()+' رد في '+((Date.now()-t0)/1000).toFixed(1)+' ثانية';
   }catch(e){
     o.textContent='❌ '+(e.message||e);
@@ -635,6 +543,7 @@ try{
 }catch(e){}
 
 function saveUsed(){
+  for(const k in S.used) S.used[k]=S.used[k].slice(-300);
   try{localStorage.setItem('sk_used',JSON.stringify(S.used))}catch(e){}
 }
 
@@ -679,7 +588,7 @@ const POS=[
 ];
 
 const ANG=[
-'أكثر اللاعبين مساهمة في الأهداف (أهداف + أسيست) في موسم محدد من الدوريات الكبرى',
+'أكثر اللاعبين مساهمة في الأهداف في موسم محدد',
 'أكثر المنتخبات تسجيلا للأهداف في نسخة محددة من كأس أمم أفريقيا',
 'أكثر المنتخبات تسجيلا للأهداف في نسخة محددة من كوبا أمريكا',
 'أكثر المنتخبات تسجيلا للأهداف في يورو محدد',
@@ -688,7 +597,7 @@ const ANG=[
 'أكثر الأندية تسجيلا للأهداف في موسم واحد من الدوري الإنجليزي',
 'أكثر الأندية تسجيلا للأهداف في موسم واحد من الليجا',
 'أكثر اللاعبين تسجيلا في ديربي محدد خلال فترة محددة',
-'أكثر اللاعبين صناعة للأهداف في موسم محدد من دوري كبير',
+'أكثر اللاعبين صناعة للأهداف في موسم محدد',
 'أكثر الحراس حفاظا على نظافة الشباك في موسم محدد',
 'أكثر اللاعبين حصولا على بطاقات في موسم محدد'
 ];
@@ -712,51 +621,35 @@ const GT=[
 'أرقام قياسية مشهورة 1998-2025'
 ];
 
-const ERT=[
-'1998-2004',
-'2005-2010',
-'2011-2016',
-'2017-2022',
-'last 5 years',
-'all periods since 1998'
-];
+const ERA98=' شرط أساسي: الحد الأدنى لأي سنة أو موسم أو حدث هو 1998، وممنوع أي حاجة قبل 1998.';
 
-const ERA98=' شرط أساسي: الحد الأدنى لأي سنة أو موسم أو حدث هو 1998، وممنوع أي حاجة قبل 1998. ممكن السؤال يكون عن سنة واحدة أو بطولة واحدة أو موسم واحد داخل الفترة دي.';
-
-const TOPFIX=' مهم: الترتيب لازم يكون واضح ومؤكد 100%. حط في الحقل o جملة قصيرة تشرح اتجاه الترتيب (الأكبر للأصغر، أو الأحدث للأقدم، إلخ). حط في s رقم أو سنة قاطعة (ممنوع تقريباً/حوالي/من المحتمل — لازم رقم مؤكد). لو مش متأكد من الرقم، غيّر السؤال كله. r=1 لازم يكون الأكبر (أو الأحدث لو زمني). ممنوع أي اسم مغموض — كل الأسماء لازم تكون معروفة لمتابعي الكورة.';
+const TOPFIX=' مهم: الترتيب لازم يكون مؤكد 100%. حط في o جملة قصيرة تشرح اتجاه الترتيب. حط في s رقم أو سنة قاطعة. لو مش متأكد، غيّر السؤال كله. r=1 لازم يكون الأكبر أو الأحدث لو زمني. ممنوع أسماء مغموضة.';
 
 const PROMPTS={
-  top:()=>`إنت مقدم مسابقات كرة قدم. اعمل سؤال "توب 10" صعب ومبتكر، قائم على إحصائية أو ترتيب معروف.
+  top:()=>`إنت مقدم مسابقات كرة قدم. اعمل سؤال "توب 10" صعب وموثوق من 1998 إلى 2026.
 
-اختار زاوية واحدة محددة ومختلفة: بطولة معينة، موسم معين، دوري معين، أو فترة معينة من 1998 وإحنا.
+اختار زاوية واحدة محددة: بطولة معينة، موسم معين، دوري معين، أو فترة معينة.
 
-الحد الأدنى لأي سنة/موسم هو 1998، وممنوع قبل 1998.
+ممنوع كلمات تقريبية زي: تقريباً، حوالي، من المحتمل، بيقال، ربما.
 
-مش شرط كل الأسئلة تكون من نفس الفترة؛ ممكن مثلا:
-- أكثر اللاعبين مساهمة في الأهداف موسم 2022-2023
-- أكثر المنتخبات تسجيلا في يورو 2008
-- أكثر المنتخبات حصدا للنقاط في دور مجموعات كأس العالم منذ 1998
-
-ممنوع أي كلمات تقريبية زي (تقريباً/حوالي/من المحتمل/بيقال/ربما). الرقم لازم يكون قاطع 100%. لو مش متأكد من رقم دقيق، غيّر السؤال لحقيقة أشهر في نفس النوع.
+الرقم لازم يكون قاطع 100%. لو مش متأكد من رقم دقيق، غيّر السؤال لحقيقة أشهر في نفس النوع.
 
 عنوان السؤال لازم يحدد البطولة/الموسم/الفترة بوضوح.
 
 مختلف عن: ${usedL('top',10)}.
 
-10 أسماء مختلفة بدون تكرار، وكلها معروفة، والترتيب مؤكد 100%.
+10 أسماء مختلفة بدون تكرار، وكلها معروفة لمتابعي الكورة.
 
 رجّع JSON بس:
 {"q":"عنوان السؤال بالعربي","o":"شرح اتجاه الترتيب","items":[{"r":1,"n":"الاسم بالعربي","s":"الرقم أو السنة القاطعة","y":"السنة أو الموسم"}]}`+TOPFIX,
 
   pw:()=>`هات 14 لاعب كرة قدم بأسمائهم بالعربي.
 
-الشرط: اللاعب يكون معروف ومتداول في الإعلام الرياضي العربي — يعني لعب في نادٍ كبير أو منتخب في كأس عالم أو دوري من الدوريات الخمس الكبرى بين 1998 و2026.
-
-أمثلة على المستوى المطلوب: دروجبا، إيتو، توتي، لامبارد، جيرارد، ريبيري، شنايدر، فورلان، فيديتش، كافو، روبرتو كارلوس، أوليفر كان، ماكليلمان، أنيلكا، كريسبو، راؤول، فان نيستلروي.
+الشرط: اللاعب يكون معروف ومتداول في الإعلام الرياضي العربي — لعب في نادٍ كبير أو منتخب في كأس عالم أو دوري من الدوريات الكبرى بين 1998 و2026.
 
 ممنوع أسماء مجهولة أو لاعبين من دوريات صغيرة.
 
-وممنوع النجوم العالميين: ميسي، رونالدو، نيمار، صلاح، مبابي، زيدان، مارادونا، بيليه، هالاند، دي بروين، مودريتش، بنزيما، روني، بيكهام، إنييستا، تشافي، هنري، رونالدينيو.
+ممنوع النجوم العالميين: ميسي، رونالدو، نيمار، صلاح، مبابي، زيدان، مارادونا، بيليه، هالاند، دي بروين، مودريتش، بنزيما، روني، بيكهام، إنييستا، تشافي، هنري، رونالدينيو.
 
 نوّع: ${pk(POS,2).join(' و')}، من ${pk(LG,3).join(' و')}، فترة ${pk(ER)[0]}.
 
@@ -764,20 +657,20 @@ const PROMPTS={
 
 رجّع JSON بس: {"p":["الاسم",...]}`+ERA98,
 
-  who:()=>`اختار لاعب كرة قدم معروف لعشاق الكورة (لعب لنادٍ كبير أو منتخب في كأس عالم بين 1998 و2026)، بس مش من أشهر 10 اسم في العالم.
+  who:()=>`اختار لاعب كرة قدم معروف لعشاق الكورة، لعب لنادٍ كبير أو منتخب في كأس عالم بين 1998 و2026، بس مش من أشهر 10 اسم في العالم.
 
 مش من: ${S.used.who.slice(-40).join('، ')||'لسه مفيش'}.
 
-اعمل "مين أنا؟" بـ 5 هينتات بالعربي المصري بدون ذكر الاسم نهائيا. الهينتات كلها حقائق مؤكدة 100% — ممنوع تقريباً/حوالي/من المحتمل.
+اعمل "مين أنا؟" بـ 5 هينتات بالعربي المصري بدون ذكر الاسم نهائيا.
 
-اللاعب لازم يكون اسمه معروف — ممنوع لاعبين مجهولين.
+الهينتات كلها حقائق مؤكدة 100% — ممنوع تقريباً/حوالي/من المحتمل.
 
-التدرج المطلوب:
-1) تفصيلة غريبة بعيدة مش بتدل على اللاعب.
-2) معلومة عن بداياته أو أول نادي.
-3) معلومة بتنطبق على عشرات اللاعبين.
-4) معلومة تضيّق الاختيارات لـ 5-10 لاعبين بس لسه مش واضحة.
-5) هينت يضيّق لـ 2-3 لاعبين، بس بدون ذكر النادي الأشهر أو الجائزة أو اللحظة الأيقونية أو رقم قياسي مشهور.
+التدرج:
+1) تفصيلة غريبة بعيدة.
+2) بداية اللاعب أو أول نادي.
+3) معلومة تنطبق على عشرات اللاعبين.
+4) معلومة تضيّق الاختيارات لـ 5-10 لاعبين.
+5) هينت يضيّق لـ 2-3 لاعبين بدون ذكر النادي الأشهر أو الجائزة أو اللحظة الأيقونية.
 
 رجّع JSON بس: {"n":"اسم اللاعب بالعربي","h":["1","2","3","4","5"]}`+ERA98,
 
@@ -787,29 +680,22 @@ const PROMPTS={
 
 مختلفة عن: ${usedL('grid',8)}.
 
-كل كاتيجوري فيها 8 أسئلة، وترتيب الصعوبة إلزامي بالظبط:
-- سؤالين p=10: سهلة جدا، أي متابع كورة عادي يعرفها.
-- سؤالين p=20: متوسطة إلى صعبة شوية.
-- سؤالين p=30: صعبة، محتاجة متابع خبير.
-- سؤالين p=40: صعبة جدا، معلومات نادرة لكن مؤكدة.
+كل كاتيجوري فيها 8 أسئلة، وترتيب الصعوبة إلزامي:
+- سؤالين p=10 سهلة جدا.
+- سؤالين p=20 متوسطة.
+- سؤالين p=30 صعبة.
+- سؤالين p=40 صعبة جدا لكن مؤكدة.
 
 كل سؤال وإجابة لازم يكون حقيقة مؤكدة 100% من 1998 إلى 2026.
 
-ممنوع أي سؤال أو إجابة قبل 1998. ممنوع أي كلمات تقريبية (تقريباً/حوالي/من المحتمل/بيقال/ربما) — الإجابة لازم تكون قاطعة 100%.
+ممنوع أي حاجة قبل 1998. ممنوع كلمات تقريبية. الإجابة قصيرة جدا ومحددة.
 
-ممكن كل سؤال يكون من سنة أو بطولة مختلفة داخل نفس الكاتيجوري.
-
-لو أي سؤال فيه شك، أو إجابته مش حصرية، أو ممكن يكون فيها أكثر من إجابة، غيّره فورا.
-
-الإجابة قصيرة جدا (كلمة أو كلمتين) ومحددة.
+لو أي سؤال فيه شك أو أكثر من إجابة، غيّره.
 
 رجّع JSON بس:
 {"cats":[{"n":"اسم الكاتيجوري بالعربي","qs":[{"p":10,"q":"السؤال بالعربي","a":"الإجابة بالعربي"}]}]}`+ERA98
 };
 
-/* ============================================================
-   MODIFIED normalizeTop(): auto-fix order from numeric s
-   ============================================================ */
 function normalizeTop(d){
   if(!d||!Array.isArray(d.items)) throw {message:'السؤال جه ناقص'};
 
@@ -844,7 +730,6 @@ function normalizeTop(d){
   if(items.some(it=>!it.n)) throw {message:'في اسم فاضي في التوب 10'};
   if(items.some(it=>hasHedge(it.n)||hasHedge(it.s))) throw {message:'السؤال فيه كلام تقريبي'};
 
-  // NEW: auto-fix ordering from numeric s
   items=trySortByS(items);
 
   return {
@@ -889,12 +774,9 @@ const PRE={};
 
 function prefetch(m){
   if(!m||PRE[m]||!gk())return;
-  PRE[m]=ask(PROMPTS[m](),undefined,m).catch(()=>null);
+  PRE[m]=ask(PROMPTS[m]()).catch(()=>null);
 }
 
-/* ============================================================
-   MODIFIED load(): full retry loop with verification
-   ============================================================ */
 async function load(){
   stopT();
   S.loading=true;
@@ -920,28 +802,25 @@ async function load(){
     if(S.mode==='top'){
       let d=PRE.top; delete PRE.top;
       d=d?await d:null;
-      if(!d) d=await ask(PROMPTS.top(),undefined,'top');
+      if(!d) d=await ask(PROMPTS.top());
 
-      let final=null;
-      for(let attempt=0;attempt<3;attempt++){
-        if(topLooksGood(d)){
-          setLoading('🔍 براجع دقة التوب 10... (محاولة '+(attempt+1)+'/3)');
-          try{
-            const r=await review('top',d);
-            if(r&&topLooksGood(r)){
-              final=r;
-              break;
-            }
-          }catch(e){/* review failed, try regenerate */}
-        }
-        if(attempt<2){
-          setLoading('🔄 السؤال مش دقيق، بجيب واحد تاني... ('+(attempt+2)+'/3)');
-          d=await ask(PROMPTS.top(),undefined,'top');
-        }
+      if(S.strict){
+        setLoading('🔍 براجع دقة التوب 10...');
+        try{
+          const r=await review('top',d);
+          if(r&&topLooksGood(r)) d=r;
+        }catch(e){}
       }
-      if(!final) final=d;
 
-      const q=normalizeTop(final);
+      let q;
+      try{
+        q=normalizeTop(d);
+      }catch(e){
+        setLoading('🔄 بجيب سؤال تاني...');
+        d=await ask(PROMPTS.top());
+        q=normalizeTop(d);
+      }
+
       S.q=q;
       S.found={};
       S.used.top.push(q.q);
@@ -950,15 +829,18 @@ async function load(){
     }else if(S.mode==='pw'){
       let d=PRE.pw; delete PRE.pw;
       d=d?await d:null;
-      if(!d) d=await ask(PROMPTS.pw(),undefined,'pw');
+      if(!d) d=await ask(PROMPTS.pw());
 
       if(!d||!Array.isArray(d.p)) throw {message:'الرد جه غلط، جرّب تاني'};
 
-      S.queue=d.p.filter(x=>!S.used.pw.includes(x));
+      S.queue=[...new Set(d.p.map(x=>String(x||'').trim()).filter(x=>x&&!S.used.pw.includes(x)))];
+
       if(!S.queue.length){
-        S.queue=d.p.slice();
+        S.queue=[...new Set(d.p.map(x=>String(x||'').trim()).filter(Boolean))];
         S.used.pw=[];
       }
+
+      if(!S.queue.length) throw {message:'مفيش أسماء جديدة، جرّب تاني'};
 
       S.used.pw.push(...S.queue);
       S.show=false;
@@ -966,42 +848,43 @@ async function load(){
     }else if(S.mode==='who'){
       let d=PRE.who; delete PRE.who;
       d=d?await d:null;
-      if(!d) d=await ask(PROMPTS.who(),undefined,'who');
+      if(!d) d=await ask(PROMPTS.who());
 
       if(!d||!d.n||!Array.isArray(d.h)||d.h.length<5) throw {message:'اللغز جه ناقص'};
 
-      S.q=d;
+      S.q={
+        n:String(d.n||'').trim(),
+        h:d.h.map(x=>String(x||'').trim()).filter(Boolean).slice(0,5)
+      };
+
+      if(!S.q.n||S.q.h.length<5) throw {message:'اللغز جه ناقص'};
+
       S.hi=1;
       S.show=false;
-      S.used.who.push(d.n);
+      S.used.who.push(S.q.n);
       startT(60,expR);
 
     }else{
-      // grid: mandatory review + retry
       let d=PRE.grid; delete PRE.grid;
       d=d?await d:null;
-      if(!d) d=await ask(PROMPTS.grid(),undefined,'grid');
+      if(!d) d=await ask(PROMPTS.grid());
 
-      let final=null;
-      for(let attempt=0;attempt<3;attempt++){
-        setLoading('🔍 براجع دقة الجدول... (محاولة '+(attempt+1)+'/3)');
-        if(gridLooksGood(d)){
-          try{
-            const r=await review('grid',d);
-            if(r&&gridLooksGood(r)){
-              final=r;
-              break;
-            }
-          }catch(e){/* review failed, regenerate */}
-        }
-        if(attempt<2){
-          setLoading('🔄 الجدول مش دقيق، بجيب واحد تاني... ('+(attempt+2)+'/3)');
-          d=await ask(PROMPTS.grid(),undefined,'grid');
-        }
+      if(S.strict){
+        setLoading('🔍 براجع دقة الجدول...');
+        try{
+          const r=await review('grid',d);
+          if(r&&gridLooksGood(r)) d=r;
+        }catch(e){}
       }
-      if(!final) final=d;
 
-      const cats=normalizeGrid(final);
+      let cats;
+      try{
+        cats=normalizeGrid(d);
+      }catch(e){
+        setLoading('🔄 بجيب جدول تاني...');
+        d=await ask(PROMPTS.grid());
+        cats=normalizeGrid(d);
+      }
 
       cats.forEach(c=>S.used.grid.push(c.n));
 
@@ -1230,17 +1113,12 @@ function render(){
       ?`<div class="mlist">${avail.slice(0,12).map(x=>`<button class="mchip ${x===cur?'on':''}" onclick="chooseModel('${esc(x)}')">${esc(x)}</button>`).join('')}</div>`
       :'';
 
-    $.innerHTML=`<div class="logo"><b>⚽</b><h1>صباحو كورة</h1><p>الأسئلة بتتولّد أونلاين — اختار اللعبة</p></div>
+    $.innerHTML=`<div class="logo"><b>⚽</b><h1>صباحو كورة</h1><p>الأسئلة بتتولّد أونلاين من Google Gemini — اختار اللعبة</p></div>
     <div class="card">
-      <p class="mu" style="margin:0 0 8px">🔑 المزود والمفتاح (بيتحفظوا على جهازك بس)</p>
+      <p class="mu" style="margin:0 0 8px">🔑 مفتاح Google Gemini (بيتحفظ على جهازك بس)</p>
 
-      <select id="gp" onchange="setProv(this.value)">
-        <option value="groq" ${gp()==='groq'?'selected':''}>⚡ Groq (الأسرع) — console.groq.com</option>
-        <option value="gemini" ${gp()==='gemini'?'selected':''}>💎 Gemini — aistudio.google.com/api-keys</option>
-      </select>
-
-      <input id="gk" type="password" dir="ltr" placeholder="${gp()==='groq'?'gsk_...':'AIza...'}" value="${esc(gk())}" style="margin-top:8px">
-      <input id="gm" dir="ltr" value="${esc(cur)}" style="margin-top:8px" placeholder="الموديل بيتاختار أوتوماتيك">
+      <input id="gk" type="password" dir="ltr" placeholder="AIza..." value="${esc(gk())}">
+      <input id="gm" dir="ltr" value="${esc(cur)}" style="margin-top:8px" placeholder="gemini-2.5-flash">
 
       <button id="gsv" class="sec w" style="margin-top:8px" onclick="saveKey()">حفظ وجيب الموديلات المتاحة</button>
 
@@ -1252,8 +1130,13 @@ function render(){
       ${chips}
 
       <label class="sw">
+        <input type="checkbox" id="fast" ${S.fast?'checked':''} onchange="togFast(this.checked)">
+        ⚡ وضع سريع (أقل محاولات وأوقات انتظار)
+      </label>
+
+      <label class="sw">
         <input type="checkbox" id="strict" ${S.strict?'checked':''} onchange="togStrict(this.checked)">
-        🔍 مراجعة تلقائية لتوب ١٠ (أدق وأبطأ شوية)
+        🔍 مراجعة تلقائية (أدق وأبطأ)
       </label>
 
       <label class="sw">
@@ -1262,11 +1145,12 @@ function render(){
       </label>
 
       <div class="tip">
-        💡 توب ١٠ بقى يقدر يجيب موسم واحد أو بطولة واحدة، بس أقدم سنة 1998.  
-        الجدول بيتم مراجعته تلقائياََ، وممكن تعديله يدويًا قبل اللعب لضمان الدقة.
+        💡 دلوقتي الشغل كله على Google Gemini فقط.  
+        لو عايز أقصى سرعة: سيّب “وضع سريع” مفتوح و“مراجعة تلقائية” مقفولة.  
+        المفتاح عادة بيبدأ بـ AIza، بس الكود بيقبل أي مفتاح بتحطه.
       </div>
 
-      <pre id="gst" dir="auto" style="white-space:pre-wrap;color:var(--mu);font-size:13px;margin:8px 0 0">${avail.length?'الموديلات المتاحة: '+avail.length+' — المختار: '+esc(cur):'⚠️ ضيف المفتاح ودوس حفظ عشان نجيب الموديلات المتاحة لمفتاحك'}</pre>
+      <pre id="gst" dir="auto" style="white-space:pre-wrap;color:var(--mu);font-size:13px;margin:8px 0 0">${avail.length?('الموديلات المتاحة: '+avail.length+' — المختار: '+esc(cur)):'⚠️ ضيف المفتاح ودوس حفظ عشان نجيب الموديلات المتاحة لمفتاحك'}</pre>
     </div>
 
     <div class="card">
@@ -1279,10 +1163,10 @@ function render(){
     ${hud(true)}
 
     <div class="menu">
-      ${m('top','🏆','توب ١٠','موسم/بطولة محددة من 1998 وإحنا • التايم بيكمّل','#f5b50a','#d97706','#92400e')}
+      ${m('top','🏆','توب ١٠','سريع من Google Gemini • موسم/بطولة من 1998 وإحنا','#f5b50a','#d97706','#92400e')}
       ${m('pw','🔑','باسورد','أسماء معروفة لمتابعي الكورة • أول واحد لـ 5','#22c55e','#15803d','#14532d')}
       ${m('who','🕵️','مين أنا؟','لاعب معروف + هينتات غامضة بتوضح • أول واحد لـ 3','#a855f7','#6d28d9','#3b0764')}
-      ${m('grid','🧩','الجدول','مراجعة تلقائية + تعديل يدوي • 10/20/30/40','#3b8cff','#1d4ed8','#172554')}
+      ${m('grid','🧩','الجدول','4 كاتيجوري × 8 أسئلة • 10/20/30/40','#3b8cff','#1d4ed8','#172554')}
     </div>`;
 
     return;
